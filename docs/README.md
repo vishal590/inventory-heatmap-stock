@@ -91,6 +91,12 @@ from scored;
 5) Capture screenshots; link working prototype, GitHub repo, and demo video in submission form.
 6) Use provided PPT template for idea/prototype deck.
 
+## Quickstart
+- Snowflake: run `sql/setup.sql` in Snowsight/Worksheet (creates `stock_daily`, seeds sample rows, builds `inventory_metrics_v` and `inventory_at_risk_v`).
+- Streamlit in Snowflake: create a new Snowsight Streamlit app and paste `app.py` content. Set context to the DB/Schema from setup and ensure the warehouse is active.
+- Local demo (CSV fallback): `python -m venv .venv && .venv\\Scripts\\activate`, `pip install -r requirements.txt`, then `streamlit run app.py`. Without Snowflake connection, it uses `data/sample_stock.csv`.
+- Optional secrets template: copy `.streamlit/secrets.example.toml` to `.streamlit/secrets.toml` and fill Snowflake creds if you want to connect in hosted Streamlit.
+
 ## Submission Q&A
 - What is your idea about? Snowflake + Streamlit dashboard that ingests daily stock data, computes avg daily issue/days-of-cover/status, shows a location x item heatmap, and flags at-risk items with reorder suggestions plus export/trend views.
 - What problem are you trying to solve? Hospitals/NGOs spot stock issues too late because data is siloed, causing stock-outs or waste.

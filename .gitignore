@@ -17,3 +17,6 @@ Thumbs.db
 *.log
 *.tmp
 *.tmp.pptx
+
+# Streamlit secrets (local)
+.streamlit/secrets.toml
