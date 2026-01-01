@@ -77,6 +77,82 @@ def load_metrics():
     return compute_metrics_from_df(load_daily_data())
 
 
+def generate_ai_summary(at_risk_df: pd.DataFrame, session) -> str:
+    """
+    Generate AI-powered plain-language summary using Snowflake Cortex.
+    Falls back to a simple summary if Cortex is not available.
+    """
+    if at_risk_df.empty:
+        return "✅ All items are well-stocked. No immediate action required."
+    
+    # Try to use Snowflake Cortex if available
+    if session:
+        try:
+            # Build summary data
+            critical_items = at_risk_df[at_risk_df["status"] == "red"]
+            warning_items = at_risk_df[at_risk_df["status"] == "orange"]
+            
+            summary_data = []
+            for _, row in at_risk_df.iterrows():
+                summary_data.append(
+                    f"{row['item']} at {row['location']}: {row['days_of_cover']:.1f} days of cover, "
+                    f"suggested reorder: {int(row['suggested_reorder'])} units"
+                )
+            
+            prompt = f"""Analyze this inventory situation and provide a concise, actionable summary for procurement teams:
+
+Critical items (red status):
+{chr(10).join([f"- {row['item']} at {row['location']}: Only {row['days_of_cover']:.1f} days left, reorder {int(row['suggested_reorder'])} units" 
+               for _, row in critical_items.iterrows()]) if not critical_items.empty else "None"}
+
+Warning items (orange status):
+{chr(10).join([f"- {row['item']} at {row['location']}: {row['days_of_cover']:.1f} days left, reorder {int(row['suggested_reorder'])} units" 
+               for _, row in warning_items.iterrows()]) if not warning_items.empty else "None"}
+
+Provide a brief, professional summary highlighting priorities and recommended actions."""
+            
+            # Use Snowflake Cortex Complete function
+            # Escape single quotes in prompt for SQL
+            escaped_prompt = prompt.replace("'", "''")
+            result = session.sql(f"""
+                SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                    'llama2-70b-chat',
+                    ARRAY_CONSTRUCT(
+                        OBJECT_CONSTRUCT('role', 'user', 'content', '{escaped_prompt}')
+                    )
+                ) AS summary
+            """).collect()
+            
+            if result and len(result) > 0:
+                return result[0]["SUMMARY"]
+        except Exception:
+            # Fall back to simple summary if Cortex fails
+            pass
+    
+    # Fallback: Generate simple summary
+    critical_count = len(at_risk_df[at_risk_df["status"] == "red"])
+    warning_count = len(at_risk_df[at_risk_df["status"] == "orange"])
+    
+    summary_parts = []
+    if critical_count > 0:
+        summary_parts.append(f"🚨 **{critical_count} critical item(s)** require immediate attention")
+        for _, row in at_risk_df[at_risk_df["status"] == "red"].iterrows():
+            summary_parts.append(
+                f"- **{row['item']}** at {row['location']}: Only {row['days_of_cover']:.1f} days remaining. "
+                f"Recommended reorder: **{int(row['suggested_reorder'])} units**"
+            )
+    
+    if warning_count > 0:
+        summary_parts.append(f"\n⚠️ **{warning_count} item(s)** need attention soon")
+        for _, row in at_risk_df[at_risk_df["status"] == "orange"].head(3).iterrows():
+            summary_parts.append(
+                f"- **{row['item']}** at {row['location']}: {row['days_of_cover']:.1f} days remaining. "
+                f"Recommended reorder: **{int(row['suggested_reorder'])} units**"
+            )
+    
+    return "\n".join(summary_parts) if summary_parts else "✅ All items are well-stocked."
+
+
 def build_heatmap(df: pd.DataFrame):
     if df.empty:
         return None
@@ -157,6 +233,17 @@ def main():
     st.download_button(
         "Export at-risk CSV", data=csv_export, file_name="at_risk.csv", mime="text/csv"
     )
+
+    # AI Summary Section
+    st.subheader("🤖 AI-Powered Summary")
+    session = get_snowflake_session()
+    with st.spinner("Generating insights..."):
+        ai_summary = generate_ai_summary(at_risk, session)
+    st.markdown(ai_summary)
+    if session:
+        st.caption("✨ Powered by Snowflake Cortex AI")
+    else:
+        st.caption("💡 Connect to Snowflake to enable AI-powered summaries with Cortex")
 
     st.subheader("Trends (closing stock)")
     trend_item = st.selectbox("Select item", items)
