@@ -315,12 +315,93 @@ streamlit run app.py
 
 The app will:
 - Try to connect to Snowflake if running in Snowflake Streamlit
-- Fall back to CSV data if running locally without connection
+- Try to connect using Streamlit secrets (for Streamlit Cloud)
+- Try to connect using environment variables (for local development)
+- Fall back to CSV data if no connection available
 - Display the dashboard at `http://localhost:8501`
 
 ---
 
-### Option 3: Deploy in Snowflake Streamlit
+### Option 3: Deploy to Streamlit Cloud
+
+Deploy your app to Streamlit Cloud (streamlit.app) with Snowflake connection.
+
+#### Step 1: Complete Snowflake Setup
+Follow **Step 2** from Option 2 above to set up tables, views, and Dynamic Tables in Snowflake.
+
+#### Step 2: Push Code to GitHub
+
+1. Make sure your code is pushed to a GitHub repository
+2. Repository should be public (or you need Streamlit Cloud Pro for private repos)
+
+#### Step 3: Deploy on Streamlit Cloud
+
+1. Go to [share.streamlit.io](https://share.streamlit.io)
+2. Sign in with GitHub
+3. Click **"New app"**
+4. Select your repository and branch
+5. Set main file: `app.py`
+6. Click **"Deploy"**
+
+#### Step 4: Configure Snowflake Connection (Secrets)
+
+1. In Streamlit Cloud, go to your app settings
+2. Click **"Secrets"** or **"⚙️ Settings"** → **"Secrets"**
+3. Add your Snowflake credentials in this format:
+
+```toml
+[snowflake]
+account = "your-account-identifier"
+user = "your-username"
+password = "your-password"
+warehouse = "COMPUTE_WH"
+database = "AI_GOOD"
+schema = "PUBLIC"
+role = "ACCOUNTADMIN"
+```
+
+**Important Security Notes:**
+- Never commit secrets to GitHub
+- Use Streamlit Cloud's secrets management
+- For production, consider using key rotation
+
+#### Step 5: Verify Connection
+
+1. After deploying, check the app at `https://your-app-name.streamlit.app`
+2. Look for connection status indicators:
+   - Top caption should show "Snowflake + Streamlit (connected...)"
+   - Sidebar should show "👤 Logged in as: YOUR_USERNAME"
+   - Bottom section should show "Data source: Snowflake Dynamic Table" or "Snowflake View"
+
+**Alternative: Environment Variables (for local testing)**
+
+If you want to test locally with Snowflake connection, create a `.streamlit/secrets.toml` file (don't commit this):
+
+```toml
+[snowflake]
+account = "your-account-identifier"
+user = "your-username"
+password = "your-password"
+warehouse = "COMPUTE_WH"
+database = "AI_GOOD"
+schema = "PUBLIC"
+role = "ACCOUNTADMIN"
+```
+
+Or set environment variables:
+```bash
+export SNOWFLAKE_ACCOUNT="your-account-identifier"
+export SNOWFLAKE_USER="your-username"
+export SNOWFLAKE_PASSWORD="your-password"
+export SNOWFLAKE_WAREHOUSE="COMPUTE_WH"
+export SNOWFLAKE_DATABASE="AI_GOOD"
+export SNOWFLAKE_SCHEMA="PUBLIC"
+export SNOWFLAKE_ROLE="ACCOUNTADMIN"
+```
+
+---
+
+### Option 4: Deploy in Snowflake Streamlit
 
 Run the app directly in Snowflake (no local setup needed).
 

@@ -9,35 +9,77 @@ import streamlit as st
 
 
 def get_snowflake_session():
-    """
-    Returns a Snowflake Snowpark session if running inside Snowflake Streamlit.
-    Falls back to None when running locally.
-    """
     try:
         from snowflake.snowpark.context import get_active_session
-
         return get_active_session()
     except Exception:
+        pass
+    
+    try:
+        import streamlit as st
+        from snowflake.snowpark import Session
+        
+        connection_parameters = None
+        
+        if "snowflake" in st.secrets:
+            connection_parameters = {
+                "account": st.secrets["snowflake"]["account"],
+                "user": st.secrets["snowflake"]["user"],
+                "password": st.secrets["snowflake"]["password"],
+                "warehouse": st.secrets["snowflake"].get("warehouse", "COMPUTE_WH"),
+                "database": st.secrets["snowflake"].get("database", "AI_GOOD"),
+                "schema": st.secrets["snowflake"].get("schema", "PUBLIC"),
+                "role": st.secrets["snowflake"].get("role", "ACCOUNTADMIN")
+            }
+        elif "connections" in st.secrets and "snowflake" in st.secrets["connections"]:
+            conn = st.secrets["connections"]["snowflake"]
+            connection_parameters = {
+                "account": conn["account"],
+                "user": conn["user"],
+                "password": conn["password"],
+                "warehouse": conn.get("warehouse", "COMPUTE_WH"),
+                "database": conn.get("database", "AI_GOOD"),
+                "schema": conn.get("schema", "PUBLIC"),
+                "role": conn.get("role", "ACCOUNTADMIN")
+            }
+        
+        if connection_parameters:
+            return Session.builder.configs(connection_parameters).create()
+    except Exception:
+        pass
+    
+    try:
+        import os
+        from snowflake.snowpark import Session
+        
+        if os.getenv("SNOWFLAKE_ACCOUNT"):
+            connection_parameters = {
+                "account": os.getenv("SNOWFLAKE_ACCOUNT"),
+                "user": os.getenv("SNOWFLAKE_USER"),
+                "password": os.getenv("SNOWFLAKE_PASSWORD"),
+                "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+                "database": os.getenv("SNOWFLAKE_DATABASE", "AI_GOOD"),
+                "schema": os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC"),
+                "role": os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
+            }
+            return Session.builder.configs(connection_parameters).create()
+    except Exception:
+        pass
+    
         return None
 
 
 def get_snowflake_user(session):
-    """
-    Get the current Snowflake user from the session.
-    Returns the username or 'unknown' if not available.
-    """
     if not session:
         return 'local_user'
     
     try:
-        # Try to get current user from Snowflake session
         result = session.sql("SELECT CURRENT_USER() AS user").collect()
         if result and len(result) > 0:
             return result[0]["USER"]
     except Exception:
         pass
     
-    # Fallback methods
     try:
         if hasattr(session, 'get_current_user'):
             return session.get_current_user()
@@ -66,36 +108,17 @@ def log_action(
     user_id: str = None,
     status: str = "PENDING"
 ):
-    """
-    Log an action to the Unistore action_logs hybrid table.
-    Falls back silently if Unistore is not available.
-    
-    Args:
-        session: Snowflake Snowpark session
-        action_type: Type of action (EXPORT_CSV, VIEW_DETAILS, ACKNOWLEDGE_ALERT, CREATE_PO, DISMISS_ALERT)
-        location: Location of the item
-        item: Item name
-        priority: Priority level
-        days_of_cover: Days of cover remaining
-        suggested_reorder: Suggested reorder quantity
-        action_details: Additional details as dict (will be converted to JSON)
-        user_id: User identifier (optional)
-        status: Action status (PENDING, COMPLETED, CANCELLED)
-    """
     if not session:
         return False
     
     try:
-        # Prepare action details as JSON string (escape single quotes)
         details_json = json.dumps(action_details) if action_details else None
         if details_json:
             details_json = details_json.replace("'", "''")
         
-        # Get user ID from Snowflake session
         if not user_id:
             user_id = get_snowflake_user(session)
         
-        # Escape strings to prevent SQL injection
         safe_user_id = str(user_id).replace("'", "''")
         safe_action_type = str(action_type).replace("'", "''")
         safe_location = str(location).replace("'", "''") if location else None
@@ -103,7 +126,6 @@ def log_action(
         safe_priority = str(priority).replace("'", "''") if priority else None
         safe_status = str(status).replace("'", "''")
         
-        # Insert into action_logs hybrid table
         insert_query = f"""
         INSERT INTO action_logs (
             user_id, action_type, location, item, priority,
@@ -123,22 +145,16 @@ def log_action(
         session.sql(insert_query).collect()
         return True
     except Exception:
-        # Silently fail if Unistore table doesn't exist or other errors
         return False
 
 
 def load_action_logs(session, limit: int = 100):
-    """
-    Load recent action logs from Unistore.
-    Returns empty DataFrame if Unistore is not available.
-    """
     if not session:
         return pd.DataFrame()
     
     try:
         return session.table("action_logs").order_by("action_timestamp", ascending=False).limit(limit).to_pandas()
     except Exception:
-        # Fallback to view if table doesn't exist
         try:
             return session.table("recent_actions_v").to_pandas()
         except Exception:
@@ -150,7 +166,6 @@ def load_daily_data():
     session = get_snowflake_session()
     if session:
         return session.table("STOCK_DAILY").to_pandas()
-    # local fallback from sample CSV
     csv_path = Path("data/sample_stock.csv")
     if csv_path.exists():
         return pd.read_csv(csv_path, parse_dates=["date"])
@@ -158,18 +173,10 @@ def load_daily_data():
 
 
 def estimate_demand_with_snowpark(session, location: str, item: str) -> float:
-    """
-    Use Snowpark to estimate future demand using ML-based forecasting.
-    Falls back to simple average if Snowpark is not available or fails.
-    Uses linear regression on historical issued quantities for trend analysis.
-    """
     if not session:
         return None
     
     try:
-        # Use Snowpark to build a simple demand forecast
-        # This uses linear regression on historical issued quantities
-        # Escape single quotes to prevent SQL injection
         safe_location = location.replace("'", "''")
         safe_item = item.replace("'", "''")
         query = f"""
@@ -181,12 +188,11 @@ def estimate_demand_with_snowpark(session, location: str, item: str) -> float:
                 FROM stock_daily
                 WHERE location = '{safe_location}' AND item = '{safe_item}'
                 ORDER BY date DESC
-                LIMIT 14  -- Use last 14 days for trend
+                LIMIT 14
             ),
             trend_analysis AS (
                 SELECT 
                     AVG(issued) AS avg_issued,
-                    -- Calculate trend (slope) using linear regression
                     (COUNT(*) * SUM(day_num * issued) - SUM(day_num) * SUM(issued)) / 
                     NULLIF(COUNT(*) * SUM(day_num * day_num) - SUM(day_num) * SUM(day_num), 0) AS trend_slope
                 FROM historical_data
@@ -201,7 +207,6 @@ def estimate_demand_with_snowpark(session, location: str, item: str) -> float:
             forecast = result[0][0]
             return float(forecast) if forecast is not None and forecast > 0 else None
     except Exception:
-        # Fall back to None if Snowpark estimation fails
         pass
     return None
 
@@ -213,56 +218,47 @@ def compute_metrics_from_df(df: pd.DataFrame, session=None) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values(["location", "item", "date"])
     
-    # Calculate simple rolling average (fallback method)
     df["avg_daily_issue"] = (
         df.groupby(["location", "item"])["issued"]
         .transform(lambda s: s.rolling(7, min_periods=1).mean())
         .round(2)
     )
     
-    # Try to enhance with Snowpark-based demand estimation
     df["ml_forecasted_demand"] = None
     if session:
-        # For each unique location-item combination, try to get ML forecast
         for (loc, itm), group_df in df.groupby(["location", "item"]):
             ml_demand = estimate_demand_with_snowpark(session, loc, itm)
             if ml_demand is not None and ml_demand > 0:
                 df.loc[(df["location"] == loc) & (df["item"] == itm), "ml_forecasted_demand"] = round(ml_demand, 2)
         
-        # Use ML forecast if available, otherwise use simple average
         df["estimated_daily_demand"] = df["ml_forecasted_demand"].fillna(df["avg_daily_issue"])
     else:
         df["estimated_daily_demand"] = df["avg_daily_issue"]
     df["days_of_cover"] = df["closing_stock"] / df["estimated_daily_demand"].replace(0, pd.NA)
-    # Create status column, handling NaN values
     status_cut = pd.cut(
         df["days_of_cover"],
         bins=[-float("inf"), 2, 5, float("inf")],
         labels=["red", "orange", "green"],
     )
-    df["status"] = status_cut.astype(str)  # Convert to string to allow "unknown" values
-    # Replace NaN (which becomes "nan" string) and actual NaN with "unknown"
+    df["status"] = status_cut.astype(str)
     df.loc[df["days_of_cover"].isna() | (df["status"] == "nan"), "status"] = "unknown"
     df["suggested_reorder"] = (
         (5 * df["estimated_daily_demand"].fillna(0) - df["closing_stock"])
         .clip(lower=0)
         .round(0)
     )
-    # Calculate urgency score (days_of_cover - lead_time_days)
-    # Negative means will run out before delivery arrives
     df["urgency_score"] = df["days_of_cover"] - df["lead_time_days"]
     
-    # Calculate priority based on urgency and days of cover
     def calculate_priority(row):
         if pd.isna(row["days_of_cover"]) or pd.isna(row["lead_time_days"]):
             return "Unknown"
         if row["days_of_cover"] <= 0:
             return "Critical"
-        if row["urgency_score"] <= 0:  # Will run out before delivery
+        if row["urgency_score"] <= 0:
             return "High"
         elif row["days_of_cover"] < 2:
             return "High"
-        elif row["days_of_cover"] <= row["lead_time_days"] + 1:  # Less than lead time + 1 day buffer
+        elif row["days_of_cover"] <= row["lead_time_days"] + 1:
             return "High"
         elif row["days_of_cover"] <= 5:
             return "Medium"
@@ -271,15 +267,12 @@ def compute_metrics_from_df(df: pd.DataFrame, session=None) -> pd.DataFrame:
     
     df["priority"] = df.apply(calculate_priority, axis=1)
     
-    # Calculate potential waste (overstock detection)
-    # Waste = stock that exceeds 30 days of cover (excessive inventory)
     df["potential_waste"] = (
         (df["closing_stock"] - (30 * df["estimated_daily_demand"].fillna(0)))
         .clip(lower=0)
         .round(0)
     )
     
-    # Calculate optimal stock level (target: 5 days + lead time)
     df["optimal_stock"] = (
         (5 + df["lead_time_days"]) * df["estimated_daily_demand"].fillna(0)
     ).round(0)
@@ -292,29 +285,23 @@ def compute_metrics_from_df(df: pd.DataFrame, session=None) -> pd.DataFrame:
 def load_metrics():
     session = get_snowflake_session()
     if session:
-        # Try Dynamic Table first (if exists), fallback to view
         try:
             metrics_df = session.table("INVENTORY_METRICS_DT").to_pandas()
-            # Enhance with ML demand forecast if available
             if not metrics_df.empty:
-                # Add ML forecast column if not present
                 if "ml_forecasted_demand" not in metrics_df.columns:
                     metrics_df["ml_forecasted_demand"] = None
                     for _, row in metrics_df.iterrows():
                         ml_demand = estimate_demand_with_snowpark(session, row["location"], row["item"])
                         if ml_demand is not None and ml_demand > 0:
                             metrics_df.loc[metrics_df.index == row.name, "ml_forecasted_demand"] = round(ml_demand, 2)
-                    # Use ML forecast if available, otherwise use avg_daily_issue
                     if "estimated_daily_demand" not in metrics_df.columns:
                         metrics_df["estimated_daily_demand"] = metrics_df["ml_forecasted_demand"].fillna(
                             metrics_df.get("avg_daily_issue", 0)
                         )
             return metrics_df
         except Exception:
-            # Fallback to view if Dynamic Table doesn't exist
             try:
                 metrics_df = session.table("INVENTORY_METRICS_V").to_pandas()
-                # Enhance with ML demand forecast
                 if not metrics_df.empty and "ml_forecasted_demand" not in metrics_df.columns:
                     metrics_df["ml_forecasted_demand"] = None
                     for _, row in metrics_df.iterrows():
@@ -332,17 +319,11 @@ def load_metrics():
 
 
 def generate_ai_summary(at_risk_df: pd.DataFrame, session) -> str:
-    """
-    Generate AI-powered plain-language summary using Snowflake Cortex.
-    Falls back to a simple summary if Cortex is not available.
-    """
     if at_risk_df.empty:
         return "✅ All items are well-stocked. No immediate action required."
     
-    # Try to use Snowflake Cortex if available
     if session:
         try:
-            # Build summary data
             critical_items = at_risk_df[at_risk_df["status"] == "red"]
             warning_items = at_risk_df[at_risk_df["status"] == "orange"]
             
@@ -365,8 +346,6 @@ Warning items (orange status):
 
 Provide a brief, professional summary highlighting priorities and recommended actions."""
             
-            # Use Snowflake Cortex Complete function
-            # Escape single quotes in prompt for SQL
             escaped_prompt = prompt.replace("'", "''")
             result = session.sql(f"""
                 SELECT SNOWFLAKE.CORTEX.COMPLETE(
@@ -380,10 +359,8 @@ Provide a brief, professional summary highlighting priorities and recommended ac
             if result and len(result) > 0:
                 return result[0]["SUMMARY"]
         except Exception:
-            # Fall back to simple summary if Cortex fails
             pass
     
-    # Fallback: Generate simple summary
     critical_count = len(at_risk_df[at_risk_df["status"] == "red"])
     warning_count = len(at_risk_df[at_risk_df["status"] == "orange"])
     
@@ -415,7 +392,6 @@ def build_heatmap(df: pd.DataFrame):
         range=["#d73027", "#fc8d59", "#1a9850", "#bdbdbd"],
     )
     
-    # Build tooltip dynamically based on available columns
     tooltip_list = [
         "location",
         "item",
@@ -424,7 +400,6 @@ def build_heatmap(df: pd.DataFrame):
         alt.Tooltip("suggested_reorder:Q", title="Suggested reorder"),
     ]
     
-    # Add ML forecast if available
     if "ml_forecasted_demand" in df.columns:
         tooltip_list.append(alt.Tooltip("ml_forecasted_demand:Q", title="ML Forecast (AI)"))
     if "estimated_daily_demand" in df.columns:
@@ -449,7 +424,6 @@ def main():
     st.set_page_config(page_title="Inventory Heatmap & Stock-Out Alerts", layout="wide")
     st.title("Inventory Heatmap & Stock-Out Alerts")
     
-    # Dynamic caption based on data source
     session = get_snowflake_session()
     if session:
         try:
@@ -470,7 +444,6 @@ def main():
     locations = sorted(metrics_df["location"].unique())
     items = sorted(metrics_df["item"].unique())
     
-    # Display current user (if connected to Snowflake)
     if session:
         current_user = get_snowflake_user(session)
         st.sidebar.info(f"👤 **Logged in as**: {current_user}")
@@ -479,7 +452,6 @@ def main():
         st.sidebar.info("👤 **Mode**: Local (no authentication)")
         st.sidebar.caption("Connect to Snowflake for user tracking")
     
-    # Data Input Section (for adding new daily stock entries)
     with st.expander("➕ Add New Stock Data", expanded=False):
         tab1, tab2 = st.tabs(["📝 Manual Entry", "📤 Upload CSV"])
         
@@ -504,17 +476,14 @@ def main():
                 if session:
                     try:
                         current_user = get_snowflake_user(session)
-                        # Escape single quotes to prevent SQL injection
                         safe_location = input_location.replace("'", "''")
                         safe_item = input_item.replace("'", "''")
-                        # Insert into Snowflake
                         insert_query = f"""
                         INSERT INTO stock_daily (date, location, item, opening_stock, received, issued, closing_stock, lead_time_days)
                         VALUES ('{input_date}', '{safe_location}', '{safe_item}', {input_opening}, {input_received}, {input_issued}, {input_closing}, {input_lead_time})
                         """
                         session.sql(insert_query).collect()
                         
-                        # Log the action with user tracking
                         log_action(
                             session,
                             action_type="CREATE_PO",
@@ -534,8 +503,8 @@ def main():
                         
                         st.success(f"✅ Stock data saved successfully for {input_item} at {input_location} on {input_date}!")
                         st.caption(f"📝 Saved by: {current_user}")
-                        st.cache_data.clear()  # Clear cache to refresh data
-                        st.rerun()  # Refresh the page to show new data
+                        st.cache_data.clear()
+                        st.rerun()
                     except Exception as e:
                         st.error(f"❌ Failed to save data: {str(e)}")
                 else:
@@ -549,10 +518,8 @@ def main():
             uploaded_file = st.file_uploader("Choose CSV file", type="csv", key="upload_csv")
             if uploaded_file is not None:
                 try:
-                    # Read uploaded CSV
                     upload_df = pd.read_csv(uploaded_file, parse_dates=["date"])
                     
-                    # Validate columns
                     required_cols = ["date", "location", "item", "opening_stock", "received", "issued", "closing_stock", "lead_time_days"]
                     if all(col in upload_df.columns for col in required_cols):
                         st.dataframe(upload_df.head(10), use_container_width=True)
@@ -563,7 +530,6 @@ def main():
                             if session:
                                 try:
                                     current_user = get_snowflake_user(session)
-                                    # Insert rows into Snowflake
                                     for _, row in upload_df.iterrows():
                                         safe_location = str(row["location"]).replace("'", "''")
                                         safe_item = str(row["item"]).replace("'", "''")
@@ -573,7 +539,6 @@ def main():
                                         """
                                         session.sql(insert_query).collect()
                                     
-                                    # Log the bulk upload action
                                     log_action(
                                         session,
                                         action_type="CREATE_PO",
@@ -588,8 +553,8 @@ def main():
                                     
                                     st.success(f"✅ Successfully uploaded {len(upload_df)} rows to Snowflake!")
                                     st.caption(f"📝 Uploaded by: {current_user}")
-                                    st.cache_data.clear()  # Clear cache to refresh data
-                                    st.rerun()  # Refresh the page
+                                    st.cache_data.clear()
+                                    st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Failed to upload data: {str(e)}")
                             else:
@@ -598,9 +563,8 @@ def main():
                         missing_cols = [col for col in required_cols if col not in upload_df.columns]
                         st.error(f"❌ CSV missing required columns: {', '.join(missing_cols)}")
                 except Exception as e:
-                    st.error(f"❌ Error reading CSV file: {str(e)}")
+                        st.error(f"❌ Error reading CSV file: {str(e)}")
 
-    # Overall Health Dashboard
     st.subheader("📊 Overall Inventory Health")
     total_items = len(metrics_df)
     at_risk_count = len(metrics_df[
@@ -631,14 +595,12 @@ def main():
                  delta_color="normal" if health_percentage >= 80 else "off",
                  help="Percentage of items with adequate stock")
     
-    # ML Demand Forecast Section (always visible)
     st.subheader("🤖 AI-Powered Demand Forecast (Snowpark ML)")
     st.caption("Machine learning-based demand estimation using Snowpark. Uses linear regression on historical data to predict future demand.")
     
     session = get_snowflake_session()
     
     if not session:
-        # Not connected to Snowflake
         st.warning(
             "**Snowpark ML Not Available**: This feature requires a Snowflake connection.\n\n"
             "**To enable ML demand forecasting**:\n"
@@ -696,7 +658,6 @@ def main():
                 "- Trend analysis will automatically activate when data is sufficient"
             )
     
-    # Location-wise Summary
     if len(locations) > 1:
         st.subheader("📍 Location Health Summary")
         location_summary = metrics_df.groupby("location").agg({
@@ -710,7 +671,6 @@ def main():
         with col1:
             st.dataframe(location_summary, use_container_width=True, hide_index=True)
         with col2:
-            # Location health chart
             if not location_summary.empty:
                 loc_chart = alt.Chart(location_summary).mark_bar().encode(
                     x=alt.X("Location:N", title="Location"),
@@ -720,7 +680,6 @@ def main():
                 )
                 st.altair_chart(loc_chart, use_container_width=True)
     
-    # Item-wise Summary
     if len(items) > 1:
         st.subheader("📦 Item Health Summary")
         item_summary = metrics_df.groupby("item").agg({
@@ -735,7 +694,6 @@ def main():
         with col1:
             st.dataframe(item_summary, use_container_width=True, hide_index=True)
         with col2:
-            # Item criticality chart
             if not item_summary.empty:
                 item_chart = alt.Chart(item_summary).mark_bar().encode(
                     x=alt.X("Item:N", title="Item"),
@@ -760,14 +718,12 @@ def main():
         & metrics_df["item"].isin(selected_items)
     ]
     
-    # Quick Actions Section
     quick_at_risk = filtered[
         (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= 2)
     ].copy()
     
     if not quick_at_risk.empty:
         st.subheader("⚡ Quick Actions Required")
-        # Add priority if not present
         if "priority" not in quick_at_risk.columns:
             def calc_priority(row):
                 days = row.get("days_of_cover", 0) if not pd.isna(row.get("days_of_cover")) else 0
@@ -802,7 +758,6 @@ def main():
         (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= risk_days)
     ].copy()
     
-    # Add priority and urgency if not already present (for CSV fallback or old views)
     if "priority" not in at_risk.columns:
         def calculate_priority(row):
             days_cover = row.get("days_of_cover", 0) if not pd.isna(row.get("days_of_cover")) else 0
@@ -829,14 +784,12 @@ def main():
             at_risk["days_of_cover"].fillna(0) - at_risk["lead_time_days"].fillna(0)
         )
     
-    # Sort by priority (Critical > High > Medium > Low > Unknown)
     priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
     at_risk["priority_order"] = at_risk["priority"].map(priority_order).fillna(4)
     at_risk = at_risk.sort_values(["priority_order", "days_of_cover", "location", "item"]).drop(columns=["priority_order"])
 
     st.subheader("At-Risk Items (Prioritized)")
     
-    # Show priority summary
     if not at_risk.empty:
         priority_counts = at_risk["priority"].value_counts()
         col1, col2, col3, col4 = st.columns(4)
@@ -853,19 +806,15 @@ def main():
             low = priority_counts.get("Low", 0)
             st.metric("🟢 Low Priority", low, delta=None)
     
-    # Display table with priority column first
     display_cols = ["priority", "location", "item", "days_of_cover", "lead_time_days", 
                     "urgency_score", "closing_stock", "suggested_reorder"]
-    # Add ML forecast if available
     if "ml_forecasted_demand" in at_risk.columns:
         display_cols.append("ml_forecasted_demand")
     if "estimated_daily_demand" in at_risk.columns:
         display_cols.append("estimated_daily_demand")
     elif "avg_daily_issue" in at_risk.columns:
         display_cols.append("avg_daily_issue")
-    # Only include columns that exist
     display_cols = [col for col in display_cols if col in at_risk.columns]
-    # Add any other columns that exist
     other_cols = [col for col in at_risk.columns if col not in display_cols]
     display_df = at_risk[display_cols + other_cols] if other_cols else at_risk[display_cols]
     
@@ -878,7 +827,6 @@ def main():
         "suggested_reorder": st.column_config.NumberColumn("Reorder Qty", format="%.0f"),
     }
     
-    # Add demand columns with appropriate labels
     if "ml_forecasted_demand" in display_df.columns:
         column_config_dict["ml_forecasted_demand"] = st.column_config.NumberColumn(
             "ML Forecast", format="%.2f", help="AI-powered demand forecast (Snowpark ML)"
@@ -894,9 +842,8 @@ def main():
         display_df,
         use_container_width=True,
         hide_index=True,
-        column_config=column_config_dict,
+        column_config=        column_config_dict,
     )
-    # Waste reduction metrics
     if not filtered.empty and "potential_waste" in filtered.columns:
         total_waste = filtered["potential_waste"].sum()
         overstocked_items = len(filtered[filtered["potential_waste"] > 0])
@@ -919,12 +866,10 @@ def main():
                         hide_index=True,
                     )
     
-    # Purchase Order Recommendations (for procurement teams)
     if not at_risk.empty:
         st.subheader("📋 Recommended Purchase Orders")
         st.caption("Consolidated purchase orders for procurement teams based on priority and location")
         
-        # Group by item and location for PO recommendations
         po_recommendations = at_risk.groupby(["item", "location"]).agg({
             "suggested_reorder": "sum",
             "priority": lambda x: "High" if "Critical" in x.values or "High" in x.values else x.iloc[0],
@@ -935,7 +880,6 @@ def main():
         po_recommendations = po_recommendations.sort_values(["priority", "days_of_cover"])
         
         if not po_recommendations.empty:
-            # Priority order for sorting
             priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
             po_recommendations["priority_order"] = po_recommendations["priority"].map(priority_order).fillna(4)
             po_recommendations = po_recommendations.sort_values(["priority_order", "days_of_cover"]).drop(columns=["priority_order"])
@@ -954,7 +898,6 @@ def main():
                 },
             )
             
-            # Export PO recommendations
             po_export = po_recommendations[["priority", "item", "location", "suggested_reorder", "lead_time_days"]].to_csv(index=False).encode("utf-8")
             if st.download_button(
                 "📥 Export Purchase Order Recommendations", 
@@ -963,7 +906,6 @@ def main():
                 mime="text/csv",
                 help="Download recommended purchase orders for procurement team"
             ):
-                # Log export action
                 session = get_snowflake_session()
                 if session:
                     for _, row in po_recommendations.iterrows():
@@ -984,10 +926,9 @@ def main():
     if st.download_button(
         "📥 Export Priority List CSV", data=csv_export, file_name="at_risk_priority.csv", mime="text/csv"
     ):
-        # Log export action
         session = get_snowflake_session()
         if session and not at_risk.empty:
-            for _, row in at_risk.head(10).iterrows():  # Log top 10 items
+            for _, row in at_risk.head(10).iterrows():
                 log_action(
                     session,
                     action_type="EXPORT_CSV",
@@ -1000,7 +941,6 @@ def main():
                     status="COMPLETED"
                 )
 
-    # AI Summary Section
     st.subheader("🤖 AI-Powered Summary")
     session = get_snowflake_session()
     with st.spinner("Generating insights..."):
@@ -1026,7 +966,6 @@ def main():
     if trend_df.empty:
         st.info("No trend data for this selection.")
     else:
-        # Historical comparison
         if len(trend_df) >= 2:
             latest_stock = trend_df.iloc[-1]["closing_stock"]
             previous_stock = trend_df.iloc[-2]["closing_stock"]
@@ -1043,7 +982,6 @@ def main():
                          delta=f"{change_pct:+.1f}%",
                          delta_color="normal" if stock_change >= 0 else "inverse")
         
-        # Enhanced trend chart with multiple metrics
         trend_chart = (
             alt.Chart(trend_df)
             .mark_line(point=True, strokeWidth=2)
@@ -1055,7 +993,6 @@ def main():
             )
         )
         
-        # Add received/issued bars
         received_chart = (
             alt.Chart(trend_df)
             .mark_bar(color="#2ca02c", opacity=0.6)
@@ -1074,27 +1011,22 @@ def main():
             )
         )
         
-        # Combine charts
         combined_chart = alt.layer(trend_chart, received_chart, issued_chart).resolve_scale(
             y='independent'
         )
         st.altair_chart(combined_chart, use_container_width=True)
         
-        # Trend analysis
         if len(trend_df) >= 3:
             recent_avg = trend_df.tail(3)["closing_stock"].mean()
             earlier_avg = trend_df.head(3)["closing_stock"].mean()
             trend_direction = "📈 Improving" if recent_avg > earlier_avg else "📉 Declining"
             st.caption(f"Trend: {trend_direction} | Recent average: {recent_avg:.1f} | Earlier average: {earlier_avg:.1f}")
 
-    # Action Logs Section (Unistore)
     session = get_snowflake_session()
     
-    # Check if Unistore table exists
     unistore_available = False
     if session:
         try:
-            # Try to query the action_logs table to see if it exists
             test_query = session.sql("SELECT COUNT(*) FROM action_logs LIMIT 1")
             test_query.collect()
             unistore_available = True
@@ -1110,7 +1042,6 @@ def main():
         with tab1:
             action_logs_df = load_action_logs(session, limit=50)
             if not action_logs_df.empty:
-                # Format the dataframe for display
                 display_logs = action_logs_df.copy()
                 if "action_details" in display_logs.columns:
                     display_logs["action_details"] = display_logs["action_details"].apply(
@@ -1169,7 +1100,6 @@ def main():
                 )
             
             if st.button("📝 Log Action", type="primary"):
-                # Get item details from metrics
                 item_row = metrics_df[
                     (metrics_df["location"] == manual_location) & (metrics_df["item"] == manual_item)
                 ]
@@ -1188,13 +1118,12 @@ def main():
                     )
                     if success:
                         st.success(f"✅ Action logged successfully!")
-                        st.cache_data.clear()  # Clear cache to refresh action logs
+                        st.cache_data.clear()
                     else:
                         st.error("❌ Failed to log action. Ensure Unistore table exists (run sql/unistore_action_logs.sql)")
                 else:
                     st.warning("Item not found in metrics.")
     elif session and not unistore_available:
-        # Connected to Snowflake but Unistore table doesn't exist
         st.subheader("📋 Action Logs (Unistore)")
         st.warning(
             "**Unistore Action Logging**: Snowflake connection detected, but Unistore table not found.\n\n"
@@ -1211,7 +1140,6 @@ def main():
             "- ✅ Manual action logging interface"
         )
     else:
-        # Not connected to Snowflake
         st.subheader("📋 Action Logs (Unistore)")
         st.info(
             "**Unistore Action Logging**: This feature requires a Snowflake connection.\n\n"
@@ -1227,17 +1155,14 @@ def main():
             "- Manual action logging interface"
         )
     
-    # Data Integration View (showing unified view from separate systems)
     st.subheader("🔗 Data Integration Status")
     st.caption("This dashboard integrates data from multiple systems into a unified view:")
     
-    # Detect actual data source
     session = get_snowflake_session()
     data_source = "Local CSV"
     data_source_details = "Using sample_stock.csv"
     if session:
         try:
-            # Try to detect which table/view is being used
             try:
                 session.table("INVENTORY_METRICS_DT").to_pandas()
                 data_source = "Snowflake Dynamic Table"
@@ -1253,7 +1178,6 @@ def main():
         except Exception:
             pass
     
-    # Calculate actual metrics from data
     total_issued = daily_df["issued"].sum() if not daily_df.empty and "issued" in daily_df.columns else 0
     total_received = daily_df["received"].sum() if not daily_df.empty and "received" in daily_df.columns else 0
     total_opening = daily_df["opening_stock"].sum() if not daily_df.empty and "opening_stock" in daily_df.columns else 0
@@ -1269,7 +1193,6 @@ def main():
     total_lead_time = metrics_df["lead_time_days"].sum() if not metrics_df.empty and "lead_time_days" in metrics_df.columns else 0
     avg_lead_time = total_lead_time / len(metrics_df) if len(metrics_df) > 0 and total_lead_time > 0 else 0
     
-    # Calculate unique locations and items from actual data
     unique_locations = len(metrics_df["location"].unique()) if not metrics_df.empty and "location" in metrics_df.columns else 0
     unique_items = len(metrics_df["item"].unique()) if not metrics_df.empty and "item" in metrics_df.columns else 0
     
@@ -1323,14 +1246,12 @@ def main():
         po_list.append("• Lead times factored into urgency calculations")
         st.markdown("<br>".join(po_list), unsafe_allow_html=True)
     
-    # Dynamic unified view message
     if session:
         unified_msg = f"✅ **Unified View**: All {len(metrics_df)} location-item combinations consolidated in Snowflake for single-pane-of-glass visibility"
     else:
         unified_msg = f"✅ **Unified View**: All {len(metrics_df)} location-item combinations from local data (connect to Snowflake for real-time updates)"
     st.success(unified_msg)
     
-    # Dynamic data source caption
     if session:
         caption_text = f"Data source: {data_source} ({data_source_details}). "
         if "Dynamic Table" in data_source:

@@ -24,3 +24,7 @@ Thumbs.db
 *.pptx
 *.ppt
 docs/presentations/
+
+# Streamlit secrets (never commit!)
+.streamlit/secrets.toml
+secrets.toml
