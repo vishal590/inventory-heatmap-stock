@@ -1,0 +1,19 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editors/OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+*.tmp
+*.tmp.pptx

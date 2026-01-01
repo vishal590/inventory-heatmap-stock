@@ -1,0 +1,19 @@
+date,location,item,opening_stock,received,issued,closing_stock,lead_time_days
+2025-12-27,Central,Amoxicillin,120,30,40,110,5
+2025-12-28,Central,Amoxicillin,110,20,35,95,5
+2025-12-29,Central,Amoxicillin,95,0,30,65,5
+2025-12-30,Central,Amoxicillin,65,0,28,37,5
+2025-12-31,Central,Amoxicillin,37,50,32,55,5
+2026-01-01,Central,Amoxicillin,55,0,25,30,5
+2025-12-27,East,ORS,200,0,60,140,4
+2025-12-28,East,ORS,140,50,70,120,4
+2025-12-29,East,ORS,120,0,60,60,4
+2025-12-30,East,ORS,60,0,55,5,4
+2025-12-31,East,ORS,5,50,40,15,4
+2026-01-01,East,ORS,15,0,10,5,4
+2025-12-27,West,PPE Kits,80,40,20,100,7
+2025-12-28,West,PPE Kits,100,0,25,75,7
+2025-12-29,West,PPE Kits,75,0,20,55,7
+2025-12-30,West,PPE Kits,55,0,18,37,7
+2025-12-31,West,PPE Kits,37,0,12,25,7
+2026-01-01,West,PPE Kits,25,30,15,40,7
