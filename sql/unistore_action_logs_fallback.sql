@@ -1,16 +1,13 @@
--- Unistore Action Logs for tracking user actions on inventory recommendations
--- Run this in Snowflake Snowsight after running setup.sql
--- Unistore provides hybrid tables that combine transactional and analytical workloads
+-- Fallback version: Regular table if HYBRID TABLE is not supported
+-- Use this if you get an error with HYBRID TABLE
+-- Run this in Snowflake Snowsight
 
--- Set context (adjust if needed)
 USE DATABASE AI_GOOD;
 USE SCHEMA PUBLIC;
 USE WAREHOUSE COMPUTE_WH;
 
--- Step 1: Create a hybrid table for action logs using Unistore
--- This table supports both transactional writes and analytical queries
--- If HYBRID TABLE is not supported, it will use a regular table
-CREATE OR REPLACE HYBRID TABLE action_logs (
+-- Create a regular table for action logs (fallback if Unistore not available)
+CREATE OR REPLACE TABLE action_logs (
   action_id NUMBER AUTOINCREMENT START 1 INCREMENT 1 PRIMARY KEY,
   action_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
   user_id STRING,
@@ -24,14 +21,14 @@ CREATE OR REPLACE HYBRID TABLE action_logs (
   status STRING DEFAULT 'PENDING'  -- 'PENDING', 'COMPLETED', 'CANCELLED'
 );
 
--- Step 2: Create indexes (run these one at a time if needed)
+-- Create indexes
 CREATE INDEX IF NOT EXISTS idx_action_timestamp ON action_logs (action_timestamp);
 
 CREATE INDEX IF NOT EXISTS idx_action_type ON action_logs (action_type);
 
 CREATE INDEX IF NOT EXISTS idx_location_item ON action_logs (location, item);
 
--- Step 3: Create views (run these after the table is created)
+-- Create views
 CREATE OR REPLACE VIEW recent_actions_v AS
 SELECT 
   action_id,
@@ -84,8 +81,3 @@ ORDER BY
   END,
   action_timestamp DESC;
 
--- Note: Hybrid tables in Unistore support:
--- - Fast transactional inserts (for logging actions)
--- - Analytical queries (for reporting and dashboards)
--- - Real-time updates and queries
--- - ACID transactions

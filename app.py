@@ -44,8 +44,13 @@ def get_snowflake_session():
             }
         
         if connection_parameters:
-            return Session.builder.configs(connection_parameters).create()
-    except Exception:
+            session = Session.builder.configs(connection_parameters).create()
+            session.sql("SELECT 1").collect()
+            return session
+    except Exception as e:
+        import streamlit as st
+        if hasattr(st, 'session_state') and 'connection_error' not in st.session_state:
+            st.session_state.connection_error = str(e)
         pass
     
     try:
@@ -62,7 +67,9 @@ def get_snowflake_session():
                 "schema": os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC"),
                 "role": os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
             }
-            return Session.builder.configs(connection_parameters).create()
+            session = Session.builder.configs(connection_parameters).create()
+            session.sql("SELECT 1").collect()
+            return session
     except Exception:
         pass
     
@@ -109,13 +116,15 @@ def log_action(
     status: str = "PENDING"
 ):
     if not session:
-        return False
+        return False, "No Snowflake session available"
     
     try:
-        details_json = json.dumps(action_details) if action_details else None
-        if details_json:
-            details_json = details_json.replace("'", "''")
-        
+        test_query = session.sql("SELECT COUNT(*) FROM action_logs LIMIT 1")
+        test_query.collect()
+    except Exception as e:
+        return False, f"action_logs table not accessible: {str(e)}"
+    
+    try:
         if not user_id:
             user_id = get_snowflake_user(session)
         
@@ -126,37 +135,56 @@ def log_action(
         safe_priority = str(priority).replace("'", "''") if priority else None
         safe_status = str(status).replace("'", "''")
         
+        if action_details:
+            details_json = json.dumps(action_details)
+            details_json_escaped = details_json.replace("'", "''").replace("\\", "\\\\")
+            details_sql = f"PARSE_JSON('{details_json_escaped}')"
+        else:
+            details_sql = "NULL"
+        
         insert_query = f"""
         INSERT INTO action_logs (
             user_id, action_type, location, item, priority,
             days_of_cover, suggested_reorder, action_details, status
-        ) VALUES (
+        )
+        SELECT 
             '{safe_user_id}', '{safe_action_type}',
             {f"'{safe_location}'" if safe_location else "NULL"},
             {f"'{safe_item}'" if safe_item else "NULL"},
             {f"'{safe_priority}'" if safe_priority else "NULL"},
             {days_of_cover if days_of_cover is not None else "NULL"},
             {suggested_reorder if suggested_reorder is not None else "NULL"},
-            {f"PARSE_JSON('{details_json}')" if details_json else "NULL"},
+            {details_sql},
             '{safe_status}'
-        )
         """
         
         session.sql(insert_query).collect()
-        return True
-    except Exception:
-        return False
+        return True, None
+    except Exception as e:
+        return False, f"Insert failed: {str(e)}"
 
 
-def load_action_logs(session, limit: int = 100):
+def load_action_logs(session, limit: int = 100, user_id: str = None):
     if not session:
         return pd.DataFrame()
     
     try:
-        return session.table("action_logs").order_by("action_timestamp", ascending=False).limit(limit).to_pandas()
+        df = session.table("action_logs")
+        if user_id:
+            df = df.filter(df["user_id"] == user_id)
+        result_df = df.order_by("action_timestamp", ascending=False).limit(limit).to_pandas()
+        if not result_df.empty:
+            result_df.columns = result_df.columns.str.lower()
+        return result_df
     except Exception:
         try:
-            return session.table("recent_actions_v").to_pandas()
+            df = session.table("recent_actions_v")
+            if user_id:
+                df = df.filter(df["user_id"] == user_id)
+            result_df = df.to_pandas()
+            if not result_df.empty:
+                result_df.columns = result_df.columns.str.lower()
+            return result_df
         except Exception:
             return pd.DataFrame()
 
@@ -165,7 +193,10 @@ def load_action_logs(session, limit: int = 100):
 def load_daily_data():
     session = get_snowflake_session()
     if session:
-        return session.table("STOCK_DAILY").to_pandas()
+        df = session.table("STOCK_DAILY").to_pandas()
+        if not df.empty:
+            df.columns = df.columns.str.lower()
+        return df
     csv_path = Path("data/sample_stock.csv")
     if csv_path.exists():
         return pd.read_csv(csv_path, parse_dates=["date"])
@@ -288,6 +319,11 @@ def load_metrics():
         try:
             metrics_df = session.table("INVENTORY_METRICS_DT").to_pandas()
             if not metrics_df.empty:
+                metrics_df.columns = metrics_df.columns.str.lower()
+                numeric_cols = ["closing_stock", "avg_daily_issue", "days_of_cover", "lead_time_days", "suggested_reorder", "urgency_score", "potential_waste", "optimal_stock"]
+                for col in numeric_cols:
+                    if col in metrics_df.columns:
+                        metrics_df[col] = pd.to_numeric(metrics_df[col], errors="coerce")
                 if "ml_forecasted_demand" not in metrics_df.columns:
                     metrics_df["ml_forecasted_demand"] = None
                     for _, row in metrics_df.iterrows():
@@ -302,16 +338,22 @@ def load_metrics():
         except Exception:
             try:
                 metrics_df = session.table("INVENTORY_METRICS_V").to_pandas()
-                if not metrics_df.empty and "ml_forecasted_demand" not in metrics_df.columns:
-                    metrics_df["ml_forecasted_demand"] = None
-                    for _, row in metrics_df.iterrows():
-                        ml_demand = estimate_demand_with_snowpark(session, row["location"], row["item"])
-                        if ml_demand is not None and ml_demand > 0:
-                            metrics_df.loc[metrics_df.index == row.name, "ml_forecasted_demand"] = round(ml_demand, 2)
-                    if "estimated_daily_demand" not in metrics_df.columns:
-                        metrics_df["estimated_daily_demand"] = metrics_df["ml_forecasted_demand"].fillna(
-                            metrics_df.get("avg_daily_issue", 0)
-                        )
+                if not metrics_df.empty:
+                    metrics_df.columns = metrics_df.columns.str.lower()
+                    numeric_cols = ["closing_stock", "avg_daily_issue", "days_of_cover", "lead_time_days", "suggested_reorder", "urgency_score", "potential_waste", "optimal_stock"]
+                    for col in numeric_cols:
+                        if col in metrics_df.columns:
+                            metrics_df[col] = pd.to_numeric(metrics_df[col], errors="coerce")
+                    if "ml_forecasted_demand" not in metrics_df.columns:
+                        metrics_df["ml_forecasted_demand"] = None
+                        for _, row in metrics_df.iterrows():
+                            ml_demand = estimate_demand_with_snowpark(session, row["location"], row["item"])
+                            if ml_demand is not None and ml_demand > 0:
+                                metrics_df.loc[metrics_df.index == row.name, "ml_forecasted_demand"] = round(ml_demand, 2)
+                        if "estimated_daily_demand" not in metrics_df.columns:
+                            metrics_df["estimated_daily_demand"] = metrics_df["ml_forecasted_demand"].fillna(
+                                metrics_df.get("avg_daily_issue", 0)
+                            )
                 return metrics_df
             except Exception:
                 pass
@@ -433,6 +475,10 @@ def main():
             st.caption("Snowflake + Streamlit (connected - using views/tables)")
     else:
         st.caption("Snowflake + Streamlit prototype (running locally with sample data)")
+        if hasattr(st, 'session_state') and 'connection_error' in st.session_state:
+            with st.expander("🔍 Connection Debug Info", expanded=False):
+                st.error(f"**Connection Error:** {st.session_state.connection_error}")
+                st.info("**Common fixes:**\n1. Account might need region: Try `'getyhji.us-east-1'` instead of `'getyhji'`\n2. Verify credentials in `.streamlit/secrets.toml`\n3. Ensure warehouse is running: `ALTER WAREHOUSE COMPUTE_WH RESUME;`\n4. Check database exists: `USE DATABASE AI_GOOD;`")
 
     daily_df = load_daily_data()
     metrics_df = load_metrics()
@@ -484,7 +530,7 @@ def main():
                         """
                         session.sql(insert_query).collect()
                         
-                        log_action(
+                        success, error = log_action(
                             session,
                             action_type="CREATE_PO",
                             location=input_location,
@@ -539,7 +585,7 @@ def main():
                                         """
                                         session.sql(insert_query).collect()
                                     
-                                    log_action(
+                                    success, error = log_action(
                                         session,
                                         action_type="CREATE_PO",
                                         action_details={
@@ -616,6 +662,9 @@ def main():
         
         if not ml_items.empty:
             forecast_comparison = ml_items[["location", "item", "avg_daily_issue", "ml_forecasted_demand", "estimated_daily_demand"]].copy()
+            forecast_comparison["avg_daily_issue"] = pd.to_numeric(forecast_comparison["avg_daily_issue"], errors="coerce").fillna(0)
+            forecast_comparison["ml_forecasted_demand"] = pd.to_numeric(forecast_comparison["ml_forecasted_demand"], errors="coerce").fillna(0)
+            forecast_comparison["estimated_daily_demand"] = pd.to_numeric(forecast_comparison["estimated_daily_demand"], errors="coerce").fillna(0)
             forecast_comparison["forecast_change"] = (
                 ((forecast_comparison["ml_forecasted_demand"] - forecast_comparison["avg_daily_issue"]) / 
                  forecast_comparison["avg_daily_issue"].replace(0, pd.NA) * 100).round(1)
@@ -641,11 +690,7 @@ def main():
                     f"- Analyzes last 14 days of historical data\n"
                     f"- Uses linear regression to detect trends\n"
                     f"- Forecasts demand 7 days ahead with trend adjustment\n"
-                    f"- More accurate than simple rolling average\n\n"
-                    f"**Benefits**:\n"
-                    f"- Better demand prediction with trend analysis\n"
-                    f"- Reduces stock-outs and overstocking\n"
-                    f"- Optimizes reorder quantities"
+                    f"- More accurate than simple rolling average"
                 )
         else:
             st.info(
@@ -909,7 +954,7 @@ def main():
                 session = get_snowflake_session()
                 if session:
                     for _, row in po_recommendations.iterrows():
-                        log_action(
+                        success, error = log_action(
                             session,
                             action_type="EXPORT_CSV",
                             location=row.get("location"),
@@ -929,7 +974,7 @@ def main():
         session = get_snowflake_session()
         if session and not at_risk.empty:
             for _, row in at_risk.head(10).iterrows():
-                log_action(
+                success, error = log_action(
                     session,
                     action_type="EXPORT_CSV",
                     location=row.get("location"),
@@ -1040,7 +1085,12 @@ def main():
         tab1, tab2, tab3 = st.tabs(["Recent Actions", "Action Summary", "Log New Action"])
         
         with tab1:
-            action_logs_df = load_action_logs(session, limit=50)
+            current_user = get_snowflake_user(session)
+            show_all_users = st.checkbox("Show all users' actions", value=True, help="Uncheck to see only your actions")
+            
+            filter_user = None if show_all_users else current_user
+            action_logs_df = load_action_logs(session, limit=50, user_id=filter_user)
+            
             if not action_logs_df.empty:
                 display_logs = action_logs_df.copy()
                 if "action_details" in display_logs.columns:
@@ -1048,26 +1098,44 @@ def main():
                         lambda x: json.dumps(x) if isinstance(x, dict) else str(x) if x else ""
                     )
                 
+                columns_to_hide = ["action_id"]
+                if show_all_users and "user_id" in display_logs.columns:
+                    pass
+                elif not show_all_users:
+                    columns_to_hide.append("user_id")
+                
+                display_columns = [col for col in display_logs.columns if col not in columns_to_hide]
+                display_logs = display_logs[display_columns]
+                
+                column_config = {
+                    "action_timestamp": st.column_config.DatetimeColumn("Timestamp", format="YYYY-MM-DD HH:mm:ss"),
+                    "action_type": st.column_config.TextColumn("Action Type"),
+                    "location": st.column_config.TextColumn("Location"),
+                    "item": st.column_config.TextColumn("Item"),
+                    "priority": st.column_config.TextColumn("Priority"),
+                    "status": st.column_config.TextColumn("Status"),
+                }
+                
+                if "user_id" in display_columns:
+                    column_config["user_id"] = st.column_config.TextColumn("User", width="small")
+                
                 st.dataframe(
                     display_logs,
                     use_container_width=True,
                     hide_index=True,
-                    column_config={
-                        "action_timestamp": st.column_config.DatetimeColumn("Timestamp", format="YYYY-MM-DD HH:mm:ss"),
-                        "action_type": st.column_config.TextColumn("Action Type"),
-                        "location": st.column_config.TextColumn("Location"),
-                        "item": st.column_config.TextColumn("Item"),
-                        "priority": st.column_config.TextColumn("Priority"),
-                        "status": st.column_config.TextColumn("Status"),
-                    }
+                    column_config=column_config
                 )
             else:
-                st.info("No action logs found. Actions will be logged here when you interact with recommendations.")
+                if show_all_users:
+                    st.info("No action logs found. Actions will be logged here when you interact with recommendations.")
+                else:
+                    st.info(f"No action logs found for user '{current_user}'. Actions will be logged here when you interact with recommendations.")
         
         with tab2:
             try:
                 summary_df = session.table("action_summary_v").to_pandas()
                 if not summary_df.empty:
+                    summary_df.columns = summary_df.columns.str.lower()
                     col1, col2 = st.columns(2)
                     with col1:
                         st.dataframe(summary_df, use_container_width=True, hide_index=True)
@@ -1105,7 +1173,7 @@ def main():
                 ]
                 if not item_row.empty:
                     row = item_row.iloc[0]
-                    success = log_action(
+                    success, error = log_action(
                         session,
                         action_type=manual_action_type,
                         location=manual_location,
@@ -1120,7 +1188,7 @@ def main():
                         st.success(f"✅ Action logged successfully!")
                         st.cache_data.clear()
                     else:
-                        st.error("❌ Failed to log action. Ensure Unistore table exists (run sql/unistore_action_logs.sql)")
+                        st.error(f"❌ Failed to log action: {error if error else 'Unknown error'}")
                 else:
                     st.warning("Item not found in metrics.")
     elif session and not unistore_available:

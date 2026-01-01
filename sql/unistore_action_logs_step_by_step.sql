@@ -1,37 +1,48 @@
--- Unistore Action Logs for tracking user actions on inventory recommendations
--- Run this in Snowflake Snowsight after running setup.sql
--- Unistore provides hybrid tables that combine transactional and analytical workloads
+-- Step-by-step version for troubleshooting
+-- Run each section separately in Snowsight
 
--- Set context (adjust if needed)
+-- ============================================
+-- STEP 1: Set context
+-- ============================================
 USE DATABASE AI_GOOD;
 USE SCHEMA PUBLIC;
 USE WAREHOUSE COMPUTE_WH;
 
--- Step 1: Create a hybrid table for action logs using Unistore
--- This table supports both transactional writes and analytical queries
--- If HYBRID TABLE is not supported, it will use a regular table
+-- ============================================
+-- STEP 2: Try creating HYBRID TABLE first
+-- ============================================
+-- If this fails, use the fallback version (unistore_action_logs_fallback.sql)
 CREATE OR REPLACE HYBRID TABLE action_logs (
   action_id NUMBER AUTOINCREMENT START 1 INCREMENT 1 PRIMARY KEY,
   action_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
   user_id STRING,
-  action_type STRING,  -- 'EXPORT_CSV', 'VIEW_DETAILS', 'ACKNOWLEDGE_ALERT', 'CREATE_PO', 'DISMISS_ALERT'
+  action_type STRING,
   location STRING,
   item STRING,
-  action_details VARIANT,  -- JSON object with additional details
-  priority STRING,  -- Priority level of the item acted upon
+  action_details VARIANT,
+  priority STRING,
   days_of_cover NUMBER,
   suggested_reorder NUMBER,
-  status STRING DEFAULT 'PENDING'  -- 'PENDING', 'COMPLETED', 'CANCELLED'
+  status STRING DEFAULT 'PENDING'
 );
 
--- Step 2: Create indexes (run these one at a time if needed)
+-- ============================================
+-- STEP 3: Verify table was created
+-- ============================================
+SELECT COUNT(*) FROM action_logs;
+
+-- ============================================
+-- STEP 4: Create indexes (run one at a time)
+-- ============================================
 CREATE INDEX IF NOT EXISTS idx_action_timestamp ON action_logs (action_timestamp);
 
 CREATE INDEX IF NOT EXISTS idx_action_type ON action_logs (action_type);
 
 CREATE INDEX IF NOT EXISTS idx_location_item ON action_logs (location, item);
 
--- Step 3: Create views (run these after the table is created)
+-- ============================================
+-- STEP 5: Create views (run one at a time)
+-- ============================================
 CREATE OR REPLACE VIEW recent_actions_v AS
 SELECT 
   action_id,
@@ -84,8 +95,3 @@ ORDER BY
   END,
   action_timestamp DESC;
 
--- Note: Hybrid tables in Unistore support:
--- - Fast transactional inserts (for logging actions)
--- - Analytical queries (for reporting and dashboards)
--- - Real-time updates and queries
--- - ACID transactions
