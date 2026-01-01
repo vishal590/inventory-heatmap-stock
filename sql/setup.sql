@@ -85,7 +85,24 @@ select
     when days_of_cover <= 5 then 'orange'
     else 'green'
   end as status,
-  greatest(0, (5 * coalesce(avg_daily_issue, 0)) - closing_stock) as suggested_reorder
+  greatest(0, (5 * coalesce(avg_daily_issue, 0)) - closing_stock) as suggested_reorder,
+  -- Urgency score: days_of_cover - lead_time_days (negative = critical)
+  case when days_of_cover is null or lead_time_days is null then null
+       else days_of_cover - lead_time_days end as urgency_score,
+  -- Priority calculation
+  case
+    when days_of_cover is null or lead_time_days is null then 'Unknown'
+    when days_of_cover <= 0 then 'Critical'
+    when (days_of_cover - lead_time_days) <= 0 then 'High'
+    when days_of_cover < 2 then 'High'
+    when days_of_cover <= (lead_time_days + 1) then 'High'
+    when days_of_cover <= 5 then 'Medium'
+    else 'Low'
+  end as priority,
+  -- Waste metrics: potential waste (overstock > 30 days)
+  greatest(0, closing_stock - (30 * coalesce(avg_daily_issue, 0))) as potential_waste,
+  -- Optimal stock level (5 days + lead time)
+  round((5 + lead_time_days) * coalesce(avg_daily_issue, 0), 0) as optimal_stock
 from scored
 where rn = 1;
 
