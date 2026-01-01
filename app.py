@@ -43,12 +43,15 @@ def compute_metrics_from_df(df: pd.DataFrame) -> pd.DataFrame:
         .round(2)
     )
     df["days_of_cover"] = df["closing_stock"] / df["avg_daily_issue"].replace(0, pd.NA)
-    df["status"] = pd.cut(
+    # Create status column, handling NaN values
+    status_cut = pd.cut(
         df["days_of_cover"],
         bins=[-float("inf"), 2, 5, float("inf")],
         labels=["red", "orange", "green"],
     )
-    df.loc[df["days_of_cover"].isna(), "status"] = "unknown"
+    df["status"] = status_cut.astype(str)  # Convert to string to allow "unknown" values
+    # Replace NaN (which becomes "nan" string) and actual NaN with "unknown"
+    df.loc[df["days_of_cover"].isna() | (df["status"] == "nan"), "status"] = "unknown"
     df["suggested_reorder"] = (
         (5 * df["avg_daily_issue"].fillna(0) - df["closing_stock"])
         .clip(lower=0)
@@ -62,7 +65,15 @@ def compute_metrics_from_df(df: pd.DataFrame) -> pd.DataFrame:
 def load_metrics():
     session = get_snowflake_session()
     if session:
-        return session.table("INVENTORY_METRICS_V").to_pandas()
+        # Try Dynamic Table first (if exists), fallback to view
+        try:
+            return session.table("INVENTORY_METRICS_DT").to_pandas()
+        except Exception:
+            # Fallback to view if Dynamic Table doesn't exist
+            try:
+                return session.table("INVENTORY_METRICS_V").to_pandas()
+            except Exception:
+                pass
     return compute_metrics_from_df(load_daily_data())
 
 
