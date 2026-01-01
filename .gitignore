@@ -20,3 +20,7 @@ Thumbs.db
 
 # Streamlit secrets (local)
 .streamlit/secrets.toml
+
+*.pptx
+*.ppt
+docs/presentations/
