@@ -817,7 +817,7 @@ ai_good/
 - Problem statement alignment
 - Impact demonstration
 
-**Note:** Demo video link to be added.
+**[📹 Watch Demo Video](https://vimeo.com/1151027847?share=copy&fl=sv&fe=ci)**
 
 ## 🔗 Live Application
 
