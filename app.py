@@ -509,10 +509,525 @@ def main():
         st.sidebar.info("👤 **Mode**: Local (no authentication)")
         st.sidebar.caption("Connect to Snowflake for user tracking")
     
-    with st.expander("➕ Add New Stock Data", expanded=False):
-        tab1, tab2 = st.tabs(["📝 Manual Entry", "📤 Upload CSV"])
+    # Filters in sidebar (shared across all tabs)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔍 Filters")
+    selected_locations = st.sidebar.multiselect(
+        "Locations", options=locations, default=locations, key="sidebar_locations"
+    )
+    selected_items = st.sidebar.multiselect(
+        "Items", options=items, default=items, key="sidebar_items"
+    )
+    risk_days = st.sidebar.slider(
+        "At-risk threshold (days)", 0.0, 10.0, 5.0, 0.5, key="sidebar_risk_days"
+    )
+    
+    filtered = metrics_df[
+        metrics_df["location"].isin(selected_locations)
+        & metrics_df["item"].isin(selected_items)
+    ]
+    
+    # Main tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Dashboard", 
+        "🗺️ Heatmap & Alerts", 
+        "📋 Purchase Orders", 
+        "📈 Analytics", 
+        "⚙️ Data Management"
+    ])
+    
+    # ========== TAB 1: DASHBOARD ==========
+    with tab1:
+        st.subheader("📊 Overall Inventory Health")
+        total_items = len(metrics_df)
+        at_risk_count = len(metrics_df[
+            (metrics_df["days_of_cover"].isna()) | (metrics_df["days_of_cover"] <= 5)
+        ])
+        critical_count = len(metrics_df[
+            (metrics_df["days_of_cover"].notna()) & (metrics_df["days_of_cover"] < 2)
+        ])
+        healthy_count = total_items - at_risk_count
+        health_percentage = (healthy_count / total_items * 100) if total_items > 0 else 0
         
-        with tab1:
+        col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Items", total_items, help="Total location-item combinations")
+    with col2:
+        st.metric("At-Risk Items", at_risk_count, 
+                 delta=f"-{at_risk_count}" if at_risk_count > 0 else None,
+                 delta_color="inverse",
+                 help="Items with ≤5 days of cover")
+    with col3:
+        st.metric("Critical Items", critical_count,
+                 delta=f"-{critical_count}" if critical_count > 0 else None,
+                 delta_color="inverse",
+                 help="Items with <2 days of cover")
+    with col4:
+        st.metric("Health Score", f"{health_percentage:.1f}%",
+                 delta=f"{health_percentage:.1f}% healthy" if health_percentage >= 80 else None,
+                 delta_color="normal" if health_percentage >= 80 else "off",
+                 help="Percentage of items with adequate stock")
+    
+        st.subheader("🤖 AI-Powered Demand Forecast (Snowpark ML)")
+        st.caption("Machine learning-based demand estimation using Snowpark. Uses linear regression on historical data to predict future demand.")
+        
+        session = get_snowflake_session()
+        
+        if not session:
+            st.warning(
+            "**Snowpark ML Not Available**: This feature requires a Snowflake connection.\n\n"
+            "**To enable ML demand forecasting**:\n"
+            "- Connect to Snowflake (run in Snowflake Streamlit or configure local connection)\n"
+            "- ML forecasts use linear regression on historical data\n"
+            "- Analyzes trends in the last 14 days to predict future demand\n"
+            "- Currently using simple rolling average for demand estimation"
+            )
+        elif metrics_df.empty:
+            st.info("No data available for ML demand forecasting.")
+        else:
+            ml_items = metrics_df[metrics_df["ml_forecasted_demand"].notna() & (metrics_df["ml_forecasted_demand"] > 0)]
+        
+        if not ml_items.empty:
+            forecast_comparison = ml_items[["location", "item", "avg_daily_issue", "ml_forecasted_demand", "estimated_daily_demand"]].copy()
+            forecast_comparison["avg_daily_issue"] = pd.to_numeric(forecast_comparison["avg_daily_issue"], errors="coerce").fillna(0)
+            forecast_comparison["ml_forecasted_demand"] = pd.to_numeric(forecast_comparison["ml_forecasted_demand"], errors="coerce").fillna(0)
+            forecast_comparison["estimated_daily_demand"] = pd.to_numeric(forecast_comparison["estimated_daily_demand"], errors="coerce").fillna(0)
+            forecast_comparison["forecast_change"] = (
+                ((forecast_comparison["ml_forecasted_demand"] - forecast_comparison["avg_daily_issue"]) / 
+                 forecast_comparison["avg_daily_issue"].replace(0, pd.NA) * 100).round(1)
+            )
+            forecast_comparison.columns = ["Location", "Item", "Simple Avg", "ML Forecast", "Used Demand", "Change %"]
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.dataframe(
+                    forecast_comparison[["Location", "Item", "Simple Avg", "ML Forecast", "Change %"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Simple Avg": st.column_config.NumberColumn("Simple Avg (units/day)", format="%.2f"),
+                        "ML Forecast": st.column_config.NumberColumn("ML Forecast (units/day)", format="%.2f"),
+                        "Change %": st.column_config.NumberColumn("Change %", format="%.1f"),
+                    }
+                )
+            with col2:
+                st.success(
+                    f"✅ **ML Forecast Active**: {len(ml_items)} items using AI-powered demand estimation.\n\n"
+                    f"**How it works**:\n"
+                    f"- Analyzes last 14 days of historical data\n"
+                    f"- Uses linear regression to detect trends\n"
+                    f"- Forecasts demand 7 days ahead with trend adjustment\n"
+                    f"- More accurate than simple rolling average"
+                )
+        else:
+            st.info(
+                "**Snowpark ML Available**: ML-based demand forecasting is enabled.\n\n"
+                "**Status**: ML forecasts will appear here once sufficient historical data is available for trend analysis.\n"
+                "**Current method**: Using simple rolling average for demand estimation.\n\n"
+                "**Requirements for ML forecast**:\n"
+                "- At least 14 days of historical data per item/location\n"
+                "- Data must show consumption patterns (issued quantities)\n"
+                "- Trend analysis will automatically activate when data is sufficient"
+            )
+    
+        if len(locations) > 1:
+            st.subheader("📍 Location Health Summary")
+        location_summary = metrics_df.groupby("location").agg({
+            "days_of_cover": lambda x: len(x[(x.isna()) | (x <= 5)]),
+            "status": lambda x: (x == "red").sum()
+        }).reset_index()
+        location_summary.columns = ["Location", "At-Risk Count", "Critical Count"]
+        location_summary = location_summary.sort_values("Critical Count", ascending=False)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.dataframe(location_summary, use_container_width=True, hide_index=True)
+        with col2:
+            if not location_summary.empty:
+                loc_chart = alt.Chart(location_summary).mark_bar().encode(
+                    x=alt.X("Location:N", title="Location"),
+                    y=alt.Y("At-Risk Count:Q", title="At-Risk Items"),
+                    color=alt.Color("Critical Count:Q", scale=alt.Scale(scheme="reds"), title="Critical"),
+                    tooltip=["Location", "At-Risk Count", "Critical Count"]
+                )
+                st.altair_chart(loc_chart, use_container_width=True)
+    
+        if len(items) > 1:
+            st.subheader("📦 Item Health Summary")
+        item_summary = metrics_df.groupby("item").agg({
+            "days_of_cover": lambda x: len(x[(x.isna()) | (x <= 5)]),
+            "status": lambda x: (x == "red").sum(),
+            "suggested_reorder": "sum"
+        }).reset_index()
+        item_summary.columns = ["Item", "At-Risk Locations", "Critical Locations", "Total Reorder Needed"]
+        item_summary = item_summary.sort_values("Critical Locations", ascending=False)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.dataframe(item_summary, use_container_width=True, hide_index=True)
+        with col2:
+            if not item_summary.empty:
+                item_chart = alt.Chart(item_summary).mark_bar().encode(
+                    x=alt.X("Item:N", title="Item"),
+                    y=alt.Y("Critical Locations:Q", title="Critical Locations"),
+                    color=alt.Color("Total Reorder Needed:Q", scale=alt.Scale(scheme="oranges"), title="Reorder Qty"),
+                    tooltip=["Item", "At-Risk Locations", "Critical Locations", "Total Reorder Needed"]
+                )
+                st.altair_chart(item_chart, use_container_width=True)
+
+        quick_at_risk = filtered[
+        (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= 2)
+    ].copy()
+    
+        if not quick_at_risk.empty:
+            st.subheader("⚡ Quick Actions Required")
+        if "priority" not in quick_at_risk.columns:
+            def calc_priority(row):
+                days = row.get("days_of_cover", 0) if not pd.isna(row.get("days_of_cover")) else 0
+                lead = row.get("lead_time_days", 0) if not pd.isna(row.get("lead_time_days")) else 0
+                if pd.isna(row.get("days_of_cover")) or pd.isna(row.get("lead_time_days")):
+                    return "Unknown"
+                if days <= 0:
+                    return "Critical"
+                if (days - lead) <= 0:
+                    return "High"
+                return "High" if days < 2 else "Medium"
+            quick_at_risk["priority"] = quick_at_risk.apply(calc_priority, axis=1)
+        
+        priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
+        quick_at_risk["priority_order"] = quick_at_risk["priority"].map(priority_order).fillna(4)
+        quick_at_risk = quick_at_risk.sort_values(["priority_order", "days_of_cover"]).head(5)
+        
+        for idx, row in quick_at_risk.iterrows():
+            priority_icon = "🔴" if row.get("priority") == "Critical" else "🟠"
+            st.info(
+                f"{priority_icon} **{row['item']}** at **{row['location']}**: "
+                f"Only {row.get('days_of_cover', 0):.1f} days remaining. "
+                f"Reorder **{int(row.get('suggested_reorder', 0))} units** immediately."
+            )
+    
+    # ========== TAB 2: HEATMAP & ALERTS ==========
+    with tab2:
+        at_risk = filtered[
+            (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= risk_days)
+        ].copy()
+        
+        if "priority" not in at_risk.columns:
+            def calculate_priority(row):
+                days_cover = row.get("days_of_cover", 0) if not pd.isna(row.get("days_of_cover")) else 0
+                lead_time = row.get("lead_time_days", 0) if not pd.isna(row.get("lead_time_days")) else 0
+                if pd.isna(row.get("days_of_cover")) or pd.isna(row.get("lead_time_days")):
+                    return "Unknown"
+                urgency = days_cover - lead_time
+                if days_cover <= 0:
+                    return "Critical"
+                if urgency <= 0:
+                    return "High"
+                elif days_cover < 2:
+                    return "High"
+                elif days_cover <= lead_time + 1:
+                    return "High"
+                elif days_cover <= 5:
+                    return "Medium"
+                else:
+                    return "Low"
+            at_risk["priority"] = at_risk.apply(calculate_priority, axis=1)
+        
+        if "urgency_score" not in at_risk.columns:
+            at_risk["urgency_score"] = (
+                at_risk["days_of_cover"].fillna(0) - at_risk["lead_time_days"].fillna(0)
+            )
+        
+        priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
+        at_risk["priority_order"] = at_risk["priority"].map(priority_order).fillna(4)
+        at_risk = at_risk.sort_values(["priority_order", "days_of_cover", "location", "item"]).drop(columns=["priority_order"])
+
+        st.subheader("🗺️ Stock Health Heatmap")
+        heatmap = build_heatmap(filtered)
+        if heatmap:
+            st.altair_chart(heatmap, use_container_width=True)
+        
+        st.subheader("⚠️ At-Risk Items (Prioritized)")
+        
+        if not at_risk.empty:
+            priority_counts = at_risk["priority"].value_counts()
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                critical = priority_counts.get("Critical", 0)
+                st.metric("🔴 Critical", critical, delta=None)
+            with col2:
+                high = priority_counts.get("High", 0)
+                st.metric("🟠 High Priority", high, delta=None)
+            with col3:
+                medium = priority_counts.get("Medium", 0)
+                st.metric("🟡 Medium Priority", medium, delta=None)
+            with col4:
+                low = priority_counts.get("Low", 0)
+                st.metric("🟢 Low Priority", low, delta=None)
+        
+            display_cols = ["priority", "location", "item", "days_of_cover", "lead_time_days", 
+                            "urgency_score", "closing_stock", "suggested_reorder"]
+            if "ml_forecasted_demand" in at_risk.columns:
+                display_cols.append("ml_forecasted_demand")
+            if "estimated_daily_demand" in at_risk.columns:
+                display_cols.append("estimated_daily_demand")
+            elif "avg_daily_issue" in at_risk.columns:
+                display_cols.append("avg_daily_issue")
+            display_cols = [col for col in display_cols if col in at_risk.columns]
+            other_cols = [col for col in at_risk.columns if col not in display_cols]
+            display_df = at_risk[display_cols + other_cols] if other_cols else at_risk[display_cols]
+            
+            column_config_dict = {
+                "priority": st.column_config.TextColumn("Priority", width="small"),
+                "days_of_cover": st.column_config.NumberColumn("Days Left", format="%.1f"),
+                "lead_time_days": st.column_config.NumberColumn("Lead Time", format="%.0f"),
+                "urgency_score": st.column_config.NumberColumn("Urgency Score", format="%.1f", 
+                    help="Days of cover minus lead time. Negative = critical"),
+                "suggested_reorder": st.column_config.NumberColumn("Reorder Qty", format="%.0f"),
+            }
+            
+            if "ml_forecasted_demand" in display_df.columns:
+                column_config_dict["ml_forecasted_demand"] = st.column_config.NumberColumn(
+                    "ML Forecast", format="%.2f", help="AI-powered demand forecast (Snowpark ML)"
+                )
+            if "estimated_daily_demand" in display_df.columns:
+                column_config_dict["estimated_daily_demand"] = st.column_config.NumberColumn(
+                    "Est. Demand", format="%.2f", help="Used demand (ML forecast if available, else simple avg)"
+                )
+            elif "avg_daily_issue" in display_df.columns:
+                column_config_dict["avg_daily_issue"] = st.column_config.NumberColumn("Avg Daily Issue", format="%.2f")
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config=column_config_dict,
+            )
+            
+            csv_export = at_risk.to_csv(index=False).encode("utf-8")
+            if st.download_button(
+                "📥 Export Priority List CSV", data=csv_export, file_name="at_risk_priority.csv", mime="text/csv"
+            ):
+                session = get_snowflake_session()
+                if session and not at_risk.empty:
+                    for _, row in at_risk.head(10).iterrows():
+                        success, error = log_action(
+                            session,
+                            action_type="EXPORT_CSV",
+                            location=row.get("location"),
+                            item=row.get("item"),
+                            priority=row.get("priority"),
+                            days_of_cover=row.get("days_of_cover"),
+                            suggested_reorder=row.get("suggested_reorder"),
+                            action_details={"export_type": "priority_list", "total_items": len(at_risk)},
+                            status="COMPLETED"
+                        )
+        else:
+            st.info("✅ No at-risk items found with current filters.")
+    
+    # ========== TAB 3: PURCHASE ORDERS ==========
+    with tab3:
+        at_risk_po = filtered[
+            (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= risk_days)
+        ].copy()
+        
+        if "priority" not in at_risk_po.columns:
+            def calculate_priority_po(row):
+                days_cover = row.get("days_of_cover", 0) if not pd.isna(row.get("days_of_cover")) else 0
+                lead_time = row.get("lead_time_days", 0) if not pd.isna(row.get("lead_time_days")) else 0
+                if pd.isna(row.get("days_of_cover")) or pd.isna(row.get("lead_time_days")):
+                    return "Unknown"
+                urgency = days_cover - lead_time
+                if days_cover <= 0:
+                    return "Critical"
+                if urgency <= 0:
+                    return "High"
+                elif days_cover < 2:
+                    return "High"
+                elif days_cover <= lead_time + 1:
+                    return "High"
+                elif days_cover <= 5:
+                    return "Medium"
+                else:
+                    return "Low"
+            at_risk_po["priority"] = at_risk_po.apply(calculate_priority_po, axis=1)
+        
+        if not at_risk_po.empty:
+            st.subheader("📋 Recommended Purchase Orders")
+            st.caption("Consolidated purchase orders for procurement teams based on priority and location")
+            
+            po_recommendations = at_risk_po.groupby(["item", "location"]).agg({
+                "suggested_reorder": "sum",
+                "priority": lambda x: "High" if "Critical" in x.values or "High" in x.values else x.iloc[0],
+                "days_of_cover": "min",
+                "lead_time_days": "first"
+            }).reset_index()
+            po_recommendations = po_recommendations[po_recommendations["suggested_reorder"] > 0]
+            po_recommendations = po_recommendations.sort_values(["priority", "days_of_cover"])
+            
+            if not po_recommendations.empty:
+                priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
+                po_recommendations["priority_order"] = po_recommendations["priority"].map(priority_order).fillna(4)
+                po_recommendations = po_recommendations.sort_values(["priority_order", "days_of_cover"]).drop(columns=["priority_order"])
+                
+                st.dataframe(
+                    po_recommendations[["priority", "item", "location", "suggested_reorder", "days_of_cover", "lead_time_days"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "priority": st.column_config.TextColumn("Priority", width="small"),
+                        "item": st.column_config.TextColumn("Item"),
+                        "location": st.column_config.TextColumn("Location"),
+                        "suggested_reorder": st.column_config.NumberColumn("Qty to Order", format="%.0f"),
+                        "days_of_cover": st.column_config.NumberColumn("Days Left", format="%.1f"),
+                        "lead_time_days": st.column_config.NumberColumn("Lead Time", format="%.0f"),
+                    },
+                )
+                
+                po_export = po_recommendations[["priority", "item", "location", "suggested_reorder", "lead_time_days"]].to_csv(index=False).encode("utf-8")
+                if st.download_button(
+                    "📥 Export Purchase Order Recommendations", 
+                    data=po_export, 
+                    file_name="purchase_orders.csv", 
+                    mime="text/csv",
+                    help="Download recommended purchase orders for procurement team"
+                ):
+                    session = get_snowflake_session()
+                    if session:
+                        for _, row in po_recommendations.iterrows():
+                            success, error = log_action(
+                                session,
+                                action_type="EXPORT_CSV",
+                                location=row.get("location"),
+                                item=row.get("item"),
+                                priority=row.get("priority"),
+                                suggested_reorder=row.get("suggested_reorder"),
+                                action_details={"export_type": "purchase_orders", "total_pos": len(po_recommendations)},
+                                status="COMPLETED"
+                            )
+            else:
+                st.info("No purchase orders needed at this time.")
+        else:
+            st.info("No at-risk items found. All items are well-stocked.")
+    
+    # ========== TAB 4: ANALYTICS ==========
+    with tab4:
+        st.subheader("📈 Trends & Historical Analysis")
+    
+        col1, col2 = st.columns(2)
+        with col1:
+            trend_item = st.selectbox("Select item", items, key="trend_item")
+        with col2:
+            trend_location = st.selectbox("Select location", locations, key="trend_location")
+    
+        trend_df = daily_df[
+            (daily_df["item"] == trend_item) & (daily_df["location"] == trend_location)
+        ].sort_values("date")
+        
+        if trend_df.empty:
+            st.info("No trend data for this selection.")
+        else:
+            if len(trend_df) >= 2:
+                latest_stock = trend_df.iloc[-1]["closing_stock"]
+                previous_stock = trend_df.iloc[-2]["closing_stock"]
+                stock_change = latest_stock - previous_stock
+                change_pct = (stock_change / previous_stock * 100) if previous_stock > 0 else 0
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Current Stock", int(latest_stock))
+                with col2:
+                    st.metric("Previous Stock", int(previous_stock))
+                with col3:
+                    st.metric("Change", f"{int(stock_change):+}", 
+                             delta=f"{change_pct:+.1f}%",
+                             delta_color="normal" if stock_change >= 0 else "inverse")
+            
+            trend_chart = (
+            alt.Chart(trend_df)
+            .mark_line(point=True, strokeWidth=2)
+            .encode(
+                x=alt.X("date:T", title="Date"),
+                y=alt.Y("closing_stock:Q", title="Stock Level"),
+                color=alt.value("#1f77b4"),
+                tooltip=["date:T", "closing_stock:Q", "issued:Q", "received:Q", "opening_stock:Q"],
+            )
+        )
+        
+        received_chart = (
+            alt.Chart(trend_df)
+            .mark_bar(color="#2ca02c", opacity=0.6)
+            .encode(
+                x=alt.X("date:T"),
+                y=alt.Y("received:Q", title="Quantity"),
+            )
+        )
+        
+        issued_chart = (
+            alt.Chart(trend_df)
+            .mark_bar(color="#d62728", opacity=0.6)
+            .encode(
+                x=alt.X("date:T"),
+                y=alt.Y("issued:Q", title="Quantity"),
+            )
+        )
+        
+        combined_chart = alt.layer(trend_chart, received_chart, issued_chart).resolve_scale(
+            y='independent'
+        )
+        st.altair_chart(combined_chart, use_container_width=True)
+        
+        if len(trend_df) >= 3:
+                recent_avg = trend_df.tail(3)["closing_stock"].mean()
+                earlier_avg = trend_df.head(3)["closing_stock"].mean()
+                trend_direction = "📈 Improving" if recent_avg > earlier_avg else "📉 Declining"
+                st.caption(f"Trend: {trend_direction} | Recent average: {recent_avg:.1f} | Earlier average: {earlier_avg:.1f}")
+        
+        st.subheader("📊 Waste Reduction Insights")
+        if not filtered.empty and "potential_waste" in filtered.columns:
+            total_waste = filtered["potential_waste"].sum()
+            overstocked_items = len(filtered[filtered["potential_waste"] > 0])
+            if total_waste > 0 or overstocked_items > 0:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Potential Waste (Units)", f"{int(total_waste):,}", 
+                             help="Items with more than 30 days of stock")
+                with col2:
+                    st.metric("Overstocked Items", overstocked_items,
+                             help="Items that exceed optimal stock levels")
+                
+                if overstocked_items > 0:
+                    waste_df = filtered[filtered["potential_waste"] > 0].sort_values("potential_waste", ascending=False)
+                    with st.expander("View Overstocked Items"):
+                        st.dataframe(
+                            waste_df[["location", "item", "closing_stock", "optimal_stock", "potential_waste"]],
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+            else:
+                st.info("✅ No overstocked items detected. All items are within optimal stock levels.")
+        else:
+            st.info("Waste reduction metrics not available.")
+        
+        st.subheader("🤖 AI-Powered Summary")
+        at_risk_ai = filtered[
+            (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= risk_days)
+        ].copy()
+        session = get_snowflake_session()
+        with st.spinner("Generating insights..."):
+            ai_summary = generate_ai_summary(at_risk_ai, session)
+        st.markdown(ai_summary)
+        if session:
+            st.caption("✨ Powered by Snowflake Cortex AI")
+        else:
+            st.caption("💡 Connect to Snowflake to enable AI-powered summaries with Cortex")
+    
+    # ========== TAB 5: DATA MANAGEMENT ==========
+    with tab5:
+        st.subheader("➕ Add New Stock Data")
+        data_tab1, data_tab2 = st.tabs(["📝 Manual Entry", "📤 Upload CSV"])
+        
+        with data_tab1:
             st.markdown("**Enter daily stock data for a location and item:**")
             
             input_col1, input_col2 = st.columns(2)
@@ -568,7 +1083,7 @@ def main():
                     st.warning("⚠️ Cannot save data: Not connected to Snowflake. Connect to Snowflake to add new stock data.")
                     st.info("💡 **Alternative**: Update `data/sample_stock.csv` manually or connect to Snowflake to use the input form.")
         
-        with tab2:
+        with data_tab2:
             st.markdown("**Upload CSV file with stock data:**")
             st.caption("CSV should have columns: date, location, item, opening_stock, received, issued, closing_stock, lead_time_days")
             
@@ -620,467 +1135,11 @@ def main():
                         missing_cols = [col for col in required_cols if col not in upload_df.columns]
                         st.error(f"❌ CSV missing required columns: {', '.join(missing_cols)}")
                 except Exception as e:
-                        st.error(f"❌ Error reading CSV file: {str(e)}")
-
-    st.subheader("📊 Overall Inventory Health")
-    total_items = len(metrics_df)
-    at_risk_count = len(metrics_df[
-        (metrics_df["days_of_cover"].isna()) | (metrics_df["days_of_cover"] <= 5)
-    ])
-    critical_count = len(metrics_df[
-        (metrics_df["days_of_cover"].notna()) & (metrics_df["days_of_cover"] < 2)
-    ])
-    healthy_count = total_items - at_risk_count
-    health_percentage = (healthy_count / total_items * 100) if total_items > 0 else 0
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Items", total_items, help="Total location-item combinations")
-    with col2:
-        st.metric("At-Risk Items", at_risk_count, 
-                 delta=f"-{at_risk_count}" if at_risk_count > 0 else None,
-                 delta_color="inverse",
-                 help="Items with ≤5 days of cover")
-    with col3:
-        st.metric("Critical Items", critical_count,
-                 delta=f"-{critical_count}" if critical_count > 0 else None,
-                 delta_color="inverse",
-                 help="Items with <2 days of cover")
-    with col4:
-        st.metric("Health Score", f"{health_percentage:.1f}%",
-                 delta=f"{health_percentage:.1f}% healthy" if health_percentage >= 80 else None,
-                 delta_color="normal" if health_percentage >= 80 else "off",
-                 help="Percentage of items with adequate stock")
-    
-    st.subheader("🤖 AI-Powered Demand Forecast (Snowpark ML)")
-    st.caption("Machine learning-based demand estimation using Snowpark. Uses linear regression on historical data to predict future demand.")
-    
-    session = get_snowflake_session()
-    
-    if not session:
-        st.warning(
-            "**Snowpark ML Not Available**: This feature requires a Snowflake connection.\n\n"
-            "**To enable ML demand forecasting**:\n"
-            "- Connect to Snowflake (run in Snowflake Streamlit or configure local connection)\n"
-            "- ML forecasts use linear regression on historical data\n"
-            "- Analyzes trends in the last 14 days to predict future demand\n"
-            "- Currently using simple rolling average for demand estimation"
-        )
-    elif metrics_df.empty:
-        st.info("No data available for ML demand forecasting.")
-    else:
-        ml_items = metrics_df[metrics_df["ml_forecasted_demand"].notna() & (metrics_df["ml_forecasted_demand"] > 0)]
+                    st.error(f"❌ Error reading CSV file: {str(e)}")
         
-        if not ml_items.empty:
-            forecast_comparison = ml_items[["location", "item", "avg_daily_issue", "ml_forecasted_demand", "estimated_daily_demand"]].copy()
-            forecast_comparison["avg_daily_issue"] = pd.to_numeric(forecast_comparison["avg_daily_issue"], errors="coerce").fillna(0)
-            forecast_comparison["ml_forecasted_demand"] = pd.to_numeric(forecast_comparison["ml_forecasted_demand"], errors="coerce").fillna(0)
-            forecast_comparison["estimated_daily_demand"] = pd.to_numeric(forecast_comparison["estimated_daily_demand"], errors="coerce").fillna(0)
-            forecast_comparison["forecast_change"] = (
-                ((forecast_comparison["ml_forecasted_demand"] - forecast_comparison["avg_daily_issue"]) / 
-                 forecast_comparison["avg_daily_issue"].replace(0, pd.NA) * 100).round(1)
-            )
-            forecast_comparison.columns = ["Location", "Item", "Simple Avg", "ML Forecast", "Used Demand", "Change %"]
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.dataframe(
-                    forecast_comparison[["Location", "Item", "Simple Avg", "ML Forecast", "Change %"]],
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Simple Avg": st.column_config.NumberColumn("Simple Avg (units/day)", format="%.2f"),
-                        "ML Forecast": st.column_config.NumberColumn("ML Forecast (units/day)", format="%.2f"),
-                        "Change %": st.column_config.NumberColumn("Change %", format="%.1f"),
-                    }
-                )
-            with col2:
-                st.success(
-                    f"✅ **ML Forecast Active**: {len(ml_items)} items using AI-powered demand estimation.\n\n"
-                    f"**How it works**:\n"
-                    f"- Analyzes last 14 days of historical data\n"
-                    f"- Uses linear regression to detect trends\n"
-                    f"- Forecasts demand 7 days ahead with trend adjustment\n"
-                    f"- More accurate than simple rolling average"
-                )
-        else:
-            st.info(
-                "**Snowpark ML Available**: ML-based demand forecasting is enabled.\n\n"
-                "**Status**: ML forecasts will appear here once sufficient historical data is available for trend analysis.\n"
-                "**Current method**: Using simple rolling average for demand estimation.\n\n"
-                "**Requirements for ML forecast**:\n"
-                "- At least 14 days of historical data per item/location\n"
-                "- Data must show consumption patterns (issued quantities)\n"
-                "- Trend analysis will automatically activate when data is sufficient"
-            )
-    
-    if len(locations) > 1:
-        st.subheader("📍 Location Health Summary")
-        location_summary = metrics_df.groupby("location").agg({
-            "days_of_cover": lambda x: len(x[(x.isna()) | (x <= 5)]),
-            "status": lambda x: (x == "red").sum()
-        }).reset_index()
-        location_summary.columns = ["Location", "At-Risk Count", "Critical Count"]
-        location_summary = location_summary.sort_values("Critical Count", ascending=False)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.dataframe(location_summary, use_container_width=True, hide_index=True)
-        with col2:
-            if not location_summary.empty:
-                loc_chart = alt.Chart(location_summary).mark_bar().encode(
-                    x=alt.X("Location:N", title="Location"),
-                    y=alt.Y("At-Risk Count:Q", title="At-Risk Items"),
-                    color=alt.Color("Critical Count:Q", scale=alt.Scale(scheme="reds"), title="Critical"),
-                    tooltip=["Location", "At-Risk Count", "Critical Count"]
-                )
-                st.altair_chart(loc_chart, use_container_width=True)
-    
-    if len(items) > 1:
-        st.subheader("📦 Item Health Summary")
-        item_summary = metrics_df.groupby("item").agg({
-            "days_of_cover": lambda x: len(x[(x.isna()) | (x <= 5)]),
-            "status": lambda x: (x == "red").sum(),
-            "suggested_reorder": "sum"
-        }).reset_index()
-        item_summary.columns = ["Item", "At-Risk Locations", "Critical Locations", "Total Reorder Needed"]
-        item_summary = item_summary.sort_values("Critical Locations", ascending=False)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.dataframe(item_summary, use_container_width=True, hide_index=True)
-        with col2:
-            if not item_summary.empty:
-                item_chart = alt.Chart(item_summary).mark_bar().encode(
-                    x=alt.X("Item:N", title="Item"),
-                    y=alt.Y("Critical Locations:Q", title="Critical Locations"),
-                    color=alt.Color("Total Reorder Needed:Q", scale=alt.Scale(scheme="oranges"), title="Reorder Qty"),
-                    tooltip=["Item", "At-Risk Locations", "Critical Locations", "Total Reorder Needed"]
-                )
-                st.altair_chart(item_chart, use_container_width=True)
-
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col1:
-        selected_locations = st.multiselect(
-            "Locations", options=locations, default=locations
-        )
-    with col2:
-        selected_items = st.multiselect("Items", options=items, default=items)
-    with col3:
-        risk_days = st.slider("At-risk threshold (days of cover)", 0.0, 10.0, 5.0, 0.5)
-
-    filtered = metrics_df[
-        metrics_df["location"].isin(selected_locations)
-        & metrics_df["item"].isin(selected_items)
-    ]
-    
-    quick_at_risk = filtered[
-        (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= 2)
-    ].copy()
-    
-    if not quick_at_risk.empty:
-        st.subheader("⚡ Quick Actions Required")
-        if "priority" not in quick_at_risk.columns:
-            def calc_priority(row):
-                days = row.get("days_of_cover", 0) if not pd.isna(row.get("days_of_cover")) else 0
-                lead = row.get("lead_time_days", 0) if not pd.isna(row.get("lead_time_days")) else 0
-                if pd.isna(row.get("days_of_cover")) or pd.isna(row.get("lead_time_days")):
-                    return "Unknown"
-                if days <= 0:
-                    return "Critical"
-                if (days - lead) <= 0:
-                    return "High"
-                return "High" if days < 2 else "Medium"
-            quick_at_risk["priority"] = quick_at_risk.apply(calc_priority, axis=1)
-        
-        priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
-        quick_at_risk["priority_order"] = quick_at_risk["priority"].map(priority_order).fillna(4)
-        quick_at_risk = quick_at_risk.sort_values(["priority_order", "days_of_cover"]).head(5)
-        
-        for idx, row in quick_at_risk.iterrows():
-            priority_icon = "🔴" if row.get("priority") == "Critical" else "🟠"
-            st.info(
-                f"{priority_icon} **{row['item']}** at **{row['location']}**: "
-                f"Only {row.get('days_of_cover', 0):.1f} days remaining. "
-                f"Reorder **{int(row.get('suggested_reorder', 0))} units** immediately."
-            )
-
-    heatmap = build_heatmap(filtered)
-    if heatmap:
-        st.subheader("Stock Health Heatmap")
-        st.altair_chart(heatmap, use_container_width=True)
-
-    at_risk = filtered[
-        (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= risk_days)
-    ].copy()
-    
-    if "priority" not in at_risk.columns:
-        def calculate_priority(row):
-            days_cover = row.get("days_of_cover", 0) if not pd.isna(row.get("days_of_cover")) else 0
-            lead_time = row.get("lead_time_days", 0) if not pd.isna(row.get("lead_time_days")) else 0
-            if pd.isna(row.get("days_of_cover")) or pd.isna(row.get("lead_time_days")):
-                return "Unknown"
-            urgency = days_cover - lead_time
-            if days_cover <= 0:
-                return "Critical"
-            if urgency <= 0:
-                return "High"
-            elif days_cover < 2:
-                return "High"
-            elif days_cover <= lead_time + 1:
-                return "High"
-            elif days_cover <= 5:
-                return "Medium"
-            else:
-                return "Low"
-        at_risk["priority"] = at_risk.apply(calculate_priority, axis=1)
-    
-    if "urgency_score" not in at_risk.columns:
-        at_risk["urgency_score"] = (
-            at_risk["days_of_cover"].fillna(0) - at_risk["lead_time_days"].fillna(0)
-        )
-    
-    priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
-    at_risk["priority_order"] = at_risk["priority"].map(priority_order).fillna(4)
-    at_risk = at_risk.sort_values(["priority_order", "days_of_cover", "location", "item"]).drop(columns=["priority_order"])
-
-    st.subheader("At-Risk Items (Prioritized)")
-    
-    if not at_risk.empty:
-        priority_counts = at_risk["priority"].value_counts()
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            critical = priority_counts.get("Critical", 0)
-            st.metric("🔴 Critical", critical, delta=None)
-        with col2:
-            high = priority_counts.get("High", 0)
-            st.metric("🟠 High Priority", high, delta=None)
-        with col3:
-            medium = priority_counts.get("Medium", 0)
-            st.metric("🟡 Medium Priority", medium, delta=None)
-        with col4:
-            low = priority_counts.get("Low", 0)
-            st.metric("🟢 Low Priority", low, delta=None)
-    
-    display_cols = ["priority", "location", "item", "days_of_cover", "lead_time_days", 
-                    "urgency_score", "closing_stock", "suggested_reorder"]
-    if "ml_forecasted_demand" in at_risk.columns:
-        display_cols.append("ml_forecasted_demand")
-    if "estimated_daily_demand" in at_risk.columns:
-        display_cols.append("estimated_daily_demand")
-    elif "avg_daily_issue" in at_risk.columns:
-        display_cols.append("avg_daily_issue")
-    display_cols = [col for col in display_cols if col in at_risk.columns]
-    other_cols = [col for col in at_risk.columns if col not in display_cols]
-    display_df = at_risk[display_cols + other_cols] if other_cols else at_risk[display_cols]
-    
-    column_config_dict = {
-        "priority": st.column_config.TextColumn("Priority", width="small"),
-        "days_of_cover": st.column_config.NumberColumn("Days Left", format="%.1f"),
-        "lead_time_days": st.column_config.NumberColumn("Lead Time", format="%.0f"),
-        "urgency_score": st.column_config.NumberColumn("Urgency Score", format="%.1f", 
-            help="Days of cover minus lead time. Negative = critical"),
-        "suggested_reorder": st.column_config.NumberColumn("Reorder Qty", format="%.0f"),
-    }
-    
-    if "ml_forecasted_demand" in display_df.columns:
-        column_config_dict["ml_forecasted_demand"] = st.column_config.NumberColumn(
-            "ML Forecast", format="%.2f", help="AI-powered demand forecast (Snowpark ML)"
-        )
-    if "estimated_daily_demand" in display_df.columns:
-        column_config_dict["estimated_daily_demand"] = st.column_config.NumberColumn(
-            "Est. Demand", format="%.2f", help="Used demand (ML forecast if available, else simple avg)"
-        )
-    elif "avg_daily_issue" in display_df.columns:
-        column_config_dict["avg_daily_issue"] = st.column_config.NumberColumn("Avg Daily Issue", format="%.2f")
-    
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=        column_config_dict,
-    )
-    if not filtered.empty and "potential_waste" in filtered.columns:
-        total_waste = filtered["potential_waste"].sum()
-        overstocked_items = len(filtered[filtered["potential_waste"] > 0])
-        if total_waste > 0 or overstocked_items > 0:
-            st.subheader("📊 Waste Reduction Insights")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Potential Waste (Units)", f"{int(total_waste):,}", 
-                         help="Items with more than 30 days of stock")
-            with col2:
-                st.metric("Overstocked Items", overstocked_items,
-                         help="Items that exceed optimal stock levels")
-            
-            if overstocked_items > 0:
-                waste_df = filtered[filtered["potential_waste"] > 0].sort_values("potential_waste", ascending=False)
-                with st.expander("View Overstocked Items"):
-                    st.dataframe(
-                        waste_df[["location", "item", "closing_stock", "optimal_stock", "potential_waste"]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-    
-    if not at_risk.empty:
-        st.subheader("📋 Recommended Purchase Orders")
-        st.caption("Consolidated purchase orders for procurement teams based on priority and location")
-        
-        po_recommendations = at_risk.groupby(["item", "location"]).agg({
-            "suggested_reorder": "sum",
-            "priority": lambda x: "High" if "Critical" in x.values or "High" in x.values else x.iloc[0],
-            "days_of_cover": "min",
-            "lead_time_days": "first"
-        }).reset_index()
-        po_recommendations = po_recommendations[po_recommendations["suggested_reorder"] > 0]
-        po_recommendations = po_recommendations.sort_values(["priority", "days_of_cover"])
-        
-        if not po_recommendations.empty:
-            priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Unknown": 4}
-            po_recommendations["priority_order"] = po_recommendations["priority"].map(priority_order).fillna(4)
-            po_recommendations = po_recommendations.sort_values(["priority_order", "days_of_cover"]).drop(columns=["priority_order"])
-            
-            st.dataframe(
-                po_recommendations[["priority", "item", "location", "suggested_reorder", "days_of_cover", "lead_time_days"]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "priority": st.column_config.TextColumn("Priority", width="small"),
-                    "item": st.column_config.TextColumn("Item"),
-                    "location": st.column_config.TextColumn("Location"),
-                    "suggested_reorder": st.column_config.NumberColumn("Qty to Order", format="%.0f"),
-                    "days_of_cover": st.column_config.NumberColumn("Days Left", format="%.1f"),
-                    "lead_time_days": st.column_config.NumberColumn("Lead Time", format="%.0f"),
-                },
-            )
-            
-            po_export = po_recommendations[["priority", "item", "location", "suggested_reorder", "lead_time_days"]].to_csv(index=False).encode("utf-8")
-            if st.download_button(
-                "📥 Export Purchase Order Recommendations", 
-                data=po_export, 
-                file_name="purchase_orders.csv", 
-                mime="text/csv",
-                help="Download recommended purchase orders for procurement team"
-            ):
-                session = get_snowflake_session()
-                if session:
-                    for _, row in po_recommendations.iterrows():
-                        success, error = log_action(
-                            session,
-                            action_type="EXPORT_CSV",
-                            location=row.get("location"),
-                            item=row.get("item"),
-                            priority=row.get("priority"),
-                            suggested_reorder=row.get("suggested_reorder"),
-                            action_details={"export_type": "purchase_orders", "total_pos": len(po_recommendations)},
-                            status="COMPLETED"
-                        )
-        else:
-            st.info("No purchase orders needed at this time.")
-    
-    csv_export = at_risk.to_csv(index=False).encode("utf-8")
-    if st.download_button(
-        "📥 Export Priority List CSV", data=csv_export, file_name="at_risk_priority.csv", mime="text/csv"
-    ):
+        st.subheader("📋 Action Logs (Unistore)")
         session = get_snowflake_session()
-        if session and not at_risk.empty:
-            for _, row in at_risk.head(10).iterrows():
-                success, error = log_action(
-                    session,
-                    action_type="EXPORT_CSV",
-                    location=row.get("location"),
-                    item=row.get("item"),
-                    priority=row.get("priority"),
-                    days_of_cover=row.get("days_of_cover"),
-                    suggested_reorder=row.get("suggested_reorder"),
-                    action_details={"export_type": "priority_list", "total_items": len(at_risk)},
-                    status="COMPLETED"
-                )
-
-    st.subheader("🤖 AI-Powered Summary")
-    session = get_snowflake_session()
-    with st.spinner("Generating insights..."):
-        ai_summary = generate_ai_summary(at_risk, session)
-    st.markdown(ai_summary)
-    if session:
-        st.caption("✨ Powered by Snowflake Cortex AI")
-    else:
-        st.caption("💡 Connect to Snowflake to enable AI-powered summaries with Cortex")
-
-    st.subheader("📈 Trends & Historical Analysis")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        trend_item = st.selectbox("Select item", items)
-    with col2:
-        trend_location = st.selectbox("Select location", locations)
-    
-    trend_df = daily_df[
-        (daily_df["item"] == trend_item) & (daily_df["location"] == trend_location)
-    ].sort_values("date")
-    
-    if trend_df.empty:
-        st.info("No trend data for this selection.")
-    else:
-        if len(trend_df) >= 2:
-            latest_stock = trend_df.iloc[-1]["closing_stock"]
-            previous_stock = trend_df.iloc[-2]["closing_stock"]
-            stock_change = latest_stock - previous_stock
-            change_pct = (stock_change / previous_stock * 100) if previous_stock > 0 else 0
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Current Stock", int(latest_stock))
-            with col2:
-                st.metric("Previous Stock", int(previous_stock))
-            with col3:
-                st.metric("Change", f"{int(stock_change):+}", 
-                         delta=f"{change_pct:+.1f}%",
-                         delta_color="normal" if stock_change >= 0 else "inverse")
-        
-        trend_chart = (
-            alt.Chart(trend_df)
-            .mark_line(point=True, strokeWidth=2)
-            .encode(
-                x=alt.X("date:T", title="Date"),
-                y=alt.Y("closing_stock:Q", title="Stock Level"),
-                color=alt.value("#1f77b4"),
-                tooltip=["date:T", "closing_stock:Q", "issued:Q", "received:Q", "opening_stock:Q"],
-            )
-        )
-        
-        received_chart = (
-            alt.Chart(trend_df)
-            .mark_bar(color="#2ca02c", opacity=0.6)
-            .encode(
-                x=alt.X("date:T"),
-                y=alt.Y("received:Q", title="Quantity"),
-            )
-        )
-        
-        issued_chart = (
-            alt.Chart(trend_df)
-            .mark_bar(color="#d62728", opacity=0.6)
-            .encode(
-                x=alt.X("date:T"),
-                y=alt.Y("issued:Q", title="Quantity"),
-            )
-        )
-        
-        combined_chart = alt.layer(trend_chart, received_chart, issued_chart).resolve_scale(
-            y='independent'
-        )
-        st.altair_chart(combined_chart, use_container_width=True)
-        
-        if len(trend_df) >= 3:
-            recent_avg = trend_df.tail(3)["closing_stock"].mean()
-            earlier_avg = trend_df.head(3)["closing_stock"].mean()
-            trend_direction = "📈 Improving" if recent_avg > earlier_avg else "📉 Declining"
-            st.caption(f"Trend: {trend_direction} | Recent average: {recent_avg:.1f} | Earlier average: {earlier_avg:.1f}")
-
-    session = get_snowflake_session()
-    
-    unistore_available = False
+        unistore_available = False
     if session:
         try:
             test_query = session.sql("SELECT COUNT(*) FROM action_logs LIMIT 1")
@@ -1093,9 +1152,9 @@ def main():
         st.subheader("📋 Action Logs (Unistore)")
         st.caption("Track actions taken on inventory recommendations. Powered by Snowflake Unistore hybrid tables.")
         
-        tab1, tab2, tab3 = st.tabs(["Recent Actions", "Action Summary", "Log New Action"])
+        action_tab1, action_tab2, action_tab3 = st.tabs(["Recent Actions", "Action Summary", "Log New Action"])
         
-        with tab1:
+        with action_tab1:
             current_user = get_snowflake_user(session)
             show_all_users = st.checkbox("Show all users' actions", value=True, help="Uncheck to see only your actions")
             
@@ -1141,83 +1200,83 @@ def main():
                     st.info("No action logs found. Actions will be logged here when you interact with recommendations.")
                 else:
                     st.info(f"No action logs found for user '{current_user}'. Actions will be logged here when you interact with recommendations.")
-        
-        with tab2:
-            try:
-                summary_df = session.table("action_summary_v").to_pandas()
-                if not summary_df.empty:
-                    summary_df.columns = summary_df.columns.str.lower()
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                    with col2:
-                        total_actions = summary_df["action_count"].sum()
-                        st.metric("Total Actions", total_actions)
-                        st.metric("Action Types", len(summary_df))
-                else:
-                    st.info("No action summary available yet.")
-            except Exception:
-                st.info("Action summary view not available. Run sql/unistore_action_logs.sql to create it.")
-        
-        with tab3:
-            st.markdown("**Manually log an action:**")
-            col1, col2 = st.columns(2)
-            with col1:
-                manual_action_type = st.selectbox(
-                    "Action Type",
-                    ["EXPORT_CSV", "VIEW_DETAILS", "ACKNOWLEDGE_ALERT", "CREATE_PO", "DISMISS_ALERT"],
-                    key="manual_action_type"
-                )
-                manual_location = st.selectbox("Location", locations, key="manual_location")
-                manual_item = st.selectbox("Item", items, key="manual_item")
-            with col2:
-                manual_status = st.selectbox("Status", ["PENDING", "COMPLETED", "CANCELLED"], key="manual_status")
-                manual_priority = st.selectbox(
-                    "Priority",
-                    ["Critical", "High", "Medium", "Low", "Unknown"],
-                    key="manual_priority"
-                )
             
-            if st.button("📝 Log Action", type="primary"):
-                item_row = metrics_df[
-                    (metrics_df["location"] == manual_location) & (metrics_df["item"] == manual_item)
-                ]
-                if not item_row.empty:
-                    row = item_row.iloc[0]
-                    success, error = log_action(
-                        session,
-                        action_type=manual_action_type,
-                        location=manual_location,
-                        item=manual_item,
-                        priority=manual_priority,
-                        days_of_cover=row.get("days_of_cover"),
-                        suggested_reorder=row.get("suggested_reorder"),
-                        action_details={"source": "manual_log", "notes": "Manually logged action"},
-                        status=manual_status
-                    )
-                    if success:
-                        st.success(f"✅ Action logged successfully!")
-                        st.cache_data.clear()
+            with action_tab2:
+                try:
+                    summary_df = session.table("action_summary_v").to_pandas()
+                    if not summary_df.empty:
+                        summary_df.columns = summary_df.columns.str.lower()
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                        with col2:
+                            total_actions = summary_df["action_count"].sum()
+                            st.metric("Total Actions", total_actions)
+                            st.metric("Action Types", len(summary_df))
                     else:
-                        st.error(f"❌ Failed to log action: {error if error else 'Unknown error'}")
-                else:
-                    st.warning("Item not found in metrics.")
+                        st.info("No action summary available yet.")
+                except Exception:
+                    st.info("Action summary view not available. Run sql/unistore_action_logs.sql to create it.")
+            
+            with action_tab3:
+                st.markdown("**Manually log an action:**")
+                col1, col2 = st.columns(2)
+                with col1:
+                    manual_action_type = st.selectbox(
+                        "Action Type",
+                        ["EXPORT_CSV", "VIEW_DETAILS", "ACKNOWLEDGE_ALERT", "CREATE_PO", "DISMISS_ALERT"],
+                        key="manual_action_type"
+                    )
+                    manual_location = st.selectbox("Location", locations, key="manual_location")
+                    manual_item = st.selectbox("Item", items, key="manual_item")
+                with col2:
+                    manual_status = st.selectbox("Status", ["PENDING", "COMPLETED", "CANCELLED"], key="manual_status")
+                    manual_priority = st.selectbox(
+                        "Priority",
+                        ["Critical", "High", "Medium", "Low", "Unknown"],
+                        key="manual_priority"
+                    )
+                
+                if st.button("📝 Log Action", type="primary"):
+                    item_row = metrics_df[
+                        (metrics_df["location"] == manual_location) & (metrics_df["item"] == manual_item)
+                    ]
+                    if not item_row.empty:
+                        row = item_row.iloc[0]
+                        success, error = log_action(
+                            session,
+                            action_type=manual_action_type,
+                            location=manual_location,
+                            item=manual_item,
+                            priority=manual_priority,
+                            days_of_cover=row.get("days_of_cover"),
+                            suggested_reorder=row.get("suggested_reorder"),
+                            action_details={"source": "manual_log", "notes": "Manually logged action"},
+                            status=manual_status
+                        )
+                        if success:
+                            st.success(f"✅ Action logged successfully!")
+                            st.cache_data.clear()
+                        else:
+                            st.error(f"❌ Failed to log action: {error if error else 'Unknown error'}")
+                    else:
+                        st.warning("Item not found in metrics.")
     elif session and not unistore_available:
         st.subheader("📋 Action Logs (Unistore)")
         st.warning(
-            "**Unistore Action Logging**: Snowflake connection detected, but Unistore table not found.\n\n"
-            "**To enable action logging**:\n"
-            "1. Open `sql/unistore_action_logs.sql` from the repository\n"
-            "2. Copy and run the SQL script in Snowsight\n"
-            "3. This will create the `action_logs` hybrid table and related views\n"
-            "4. Refresh this page - actions will then be automatically logged\n\n"
-            "**What you'll get**:\n"
-            "- ✅ Track CSV exports (priority lists and purchase orders)\n"
-            "- ✅ Log when alerts are acknowledged\n"
-            "- ✅ Record purchase order creation\n"
-            "- ✅ View action history and summaries\n"
-            "- ✅ Manual action logging interface"
-        )
+                "**Unistore Action Logging**: Snowflake connection detected, but Unistore table not found.\n\n"
+                "**To enable action logging**:\n"
+                "1. Open `sql/unistore_action_logs.sql` from the repository\n"
+                "2. Copy and run the SQL script in Snowsight\n"
+                "3. This will create the `action_logs` hybrid table and related views\n"
+                "4. Refresh this page - actions will then be automatically logged\n\n"
+                "**What you'll get**:\n"
+                "- ✅ Track CSV exports (priority lists and purchase orders)\n"
+                "- ✅ Log when alerts are acknowledged\n"
+                "- ✅ Record purchase order creation\n"
+                "- ✅ View action history and summaries\n"
+                "- ✅ Manual action logging interface"
+            )
     else:
         st.subheader("📋 Action Logs (Unistore)")
         st.info(
@@ -1233,15 +1292,14 @@ def main():
             "- View action history and summaries\n"
             "- Manual action logging interface"
         )
-    
-    st.subheader("🔗 Data Integration Status")
-    st.caption("This dashboard integrates data from multiple systems into a unified view:")
-    
-    session = get_snowflake_session()
-    data_source = "Local CSV"
-    data_source_details = "Using sample_stock.csv"
-    if session:
-        try:
+        
+        st.subheader("🔗 Data Integration Status")
+        st.caption("This dashboard integrates data from multiple systems into a unified view:")
+        
+        session = get_snowflake_session()
+        data_source = "Local CSV"
+        data_source_details = "Using sample_stock.csv"
+        if session:
             try:
                 session.table("INVENTORY_METRICS_DT").to_pandas()
                 data_source = "Snowflake Dynamic Table"
@@ -1254,93 +1312,97 @@ def main():
                 except Exception:
                     data_source = "Snowflake (Direct)"
                     data_source_details = "Direct table access"
-        except Exception:
-            pass
-    
-    total_issued = daily_df["issued"].sum() if not daily_df.empty and "issued" in daily_df.columns else 0
-    total_received = daily_df["received"].sum() if not daily_df.empty and "received" in daily_df.columns else 0
-    total_opening = daily_df["opening_stock"].sum() if not daily_df.empty and "opening_stock" in daily_df.columns else 0
-    total_closing = daily_df["closing_stock"].sum() if not daily_df.empty and "closing_stock" in daily_df.columns else 0
-    unique_dates = daily_df["date"].nunique() if not daily_df.empty and "date" in daily_df.columns else 0
-    date_range = ""
-    if not daily_df.empty and "date" in daily_df.columns:
-        min_date = daily_df["date"].min()
-        max_date = daily_df["date"].max()
-        date_range = f"{min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')}"
-    
-    avg_consumption = metrics_df["avg_daily_issue"].mean() if not metrics_df.empty and "avg_daily_issue" in metrics_df.columns else 0
-    total_lead_time = metrics_df["lead_time_days"].sum() if not metrics_df.empty and "lead_time_days" in metrics_df.columns else 0
-    avg_lead_time = total_lead_time / len(metrics_df) if len(metrics_df) > 0 and total_lead_time > 0 else 0
-    
-    unique_locations = len(metrics_df["location"].unique()) if not metrics_df.empty and "location" in metrics_df.columns else 0
-    unique_items = len(metrics_df["item"].unique()) if not metrics_df.empty and "item" in metrics_df.columns else 0
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("📦 **Inventory System**")
-        inventory_list = []
-        if total_received > 0:
-            inventory_list.append(f"• Total received: {int(total_received):,} units")
-        if total_opening > 0:
-            inventory_list.append(f"• Total opening stock: {int(total_opening):,} units")
-        if total_closing > 0:
-            inventory_list.append(f"• Total closing stock: {int(total_closing):,} units")
-        inventory_list.append(f"• Current items tracked: {len(metrics_df)} location-item combinations")
-        if unique_locations > 0:
-            inventory_list.append(f"• Locations: {unique_locations}")
-        if unique_items > 0:
-            inventory_list.append(f"• Items: {unique_items}")
-        if date_range:
-            inventory_list.append(f"• Date range: {date_range}")
-        inventory_list.append("• Daily stock levels (opening, received, issued, closing)")
-        st.markdown("<br>".join(inventory_list), unsafe_allow_html=True)
-    with col2:
-        st.markdown("📊 **Usage/Sales System**")
-        usage_list = []
-        if total_issued > 0:
-            usage_list.append(f"• Total issued: {int(total_issued):,} units")
-        if unique_dates > 0:
-            usage_list.append(f"• Days of data: {unique_dates}")
-        if avg_consumption > 0:
-            usage_list.append(f"• Avg consumption: {avg_consumption:.1f} units/day")
-            usage_list.append("• Consumption patterns analyzed from issued quantities")
+            except Exception:
+                pass
+        
+        total_issued = daily_df["issued"].sum() if not daily_df.empty and "issued" in daily_df.columns else 0
+        total_received = daily_df["received"].sum() if not daily_df.empty and "received" in daily_df.columns else 0
+        total_opening = daily_df["opening_stock"].sum() if not daily_df.empty and "opening_stock" in daily_df.columns else 0
+        total_closing = daily_df["closing_stock"].sum() if not daily_df.empty and "closing_stock" in daily_df.columns else 0
+        unique_dates = daily_df["date"].nunique() if not daily_df.empty and "date" in daily_df.columns else 0
+        date_range = ""
+        if not daily_df.empty and "date" in daily_df.columns:
+            min_date = daily_df["date"].min()
+            max_date = daily_df["date"].max()
+            date_range = f"{min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')}"
+        
+        avg_consumption = metrics_df["avg_daily_issue"].mean() if not metrics_df.empty and "avg_daily_issue" in metrics_df.columns else 0
+        total_lead_time = metrics_df["lead_time_days"].sum() if not metrics_df.empty and "lead_time_days" in metrics_df.columns else 0
+        avg_lead_time = total_lead_time / len(metrics_df) if len(metrics_df) > 0 and total_lead_time > 0 else 0
+        
+        unique_locations = len(metrics_df["location"].unique()) if not metrics_df.empty and "location" in metrics_df.columns else 0
+        unique_items = len(metrics_df["item"].unique()) if not metrics_df.empty and "item" in metrics_df.columns else 0
+        
+        at_risk_integration = filtered[
+            (filtered["days_of_cover"].isna()) | (filtered["days_of_cover"] <= risk_days)
+        ]
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("📦 **Inventory System**")
+            inventory_list = []
+            if total_received > 0:
+                inventory_list.append(f"• Total received: {int(total_received):,} units")
+            if total_opening > 0:
+                inventory_list.append(f"• Total opening stock: {int(total_opening):,} units")
+            if total_closing > 0:
+                inventory_list.append(f"• Total closing stock: {int(total_closing):,} units")
+            inventory_list.append(f"• Current items tracked: {len(metrics_df)} location-item combinations")
+            if unique_locations > 0:
+                inventory_list.append(f"• Locations: {unique_locations}")
+            if unique_items > 0:
+                inventory_list.append(f"• Items: {unique_items}")
+            if date_range:
+                inventory_list.append(f"• Date range: {date_range}")
+            inventory_list.append("• Daily stock levels (opening, received, issued, closing)")
+            st.markdown("<br>".join(inventory_list), unsafe_allow_html=True)
+        with col2:
+            st.markdown("📊 **Usage/Sales System**")
+            usage_list = []
+            if total_issued > 0:
+                usage_list.append(f"• Total issued: {int(total_issued):,} units")
+            if unique_dates > 0:
+                usage_list.append(f"• Days of data: {unique_dates}")
+            if avg_consumption > 0:
+                usage_list.append(f"• Avg consumption: {avg_consumption:.1f} units/day")
+                usage_list.append("• Consumption patterns analyzed from issued quantities")
+            else:
+                usage_list.append("• Consumption patterns calculated from historical data")
+            if not metrics_df.empty:
+                items_with_usage = len(metrics_df[metrics_df["avg_daily_issue"] > 0]) if "avg_daily_issue" in metrics_df.columns else 0
+                usage_list.append(f"• Items with usage data: {items_with_usage}")
+            st.markdown("<br>".join(usage_list), unsafe_allow_html=True)
+        with col3:
+            st.markdown("📋 **Purchase Order System**")
+            po_list = []
+            if avg_lead_time > 0:
+                po_list.append(f"• Avg lead time: {avg_lead_time:.1f} days")
+            if len(at_risk_integration) > 0:
+                po_list.append(f"• Reorder recommendations: {len(at_risk_integration)} items")
+            else:
+                po_list.append("• Reorder recommendations: 0 items (all well-stocked)")
+            if not metrics_df.empty and "lead_time_days" in metrics_df.columns:
+                items_with_lead_time = len(metrics_df[metrics_df["lead_time_days"].notna()])
+                po_list.append(f"• Items with lead time data: {items_with_lead_time}")
+            po_list.append("• Lead times factored into urgency calculations")
+            st.markdown("<br>".join(po_list), unsafe_allow_html=True)
+        
+        if session:
+            unified_msg = f"✅ **Unified View**: All {len(metrics_df)} location-item combinations consolidated in Snowflake for single-pane-of-glass visibility"
         else:
-            usage_list.append("• Consumption patterns calculated from historical data")
-        if not metrics_df.empty:
-            items_with_usage = len(metrics_df[metrics_df["avg_daily_issue"] > 0]) if "avg_daily_issue" in metrics_df.columns else 0
-            usage_list.append(f"• Items with usage data: {items_with_usage}")
-        st.markdown("<br>".join(usage_list), unsafe_allow_html=True)
-    with col3:
-        st.markdown("📋 **Purchase Order System**")
-        po_list = []
-        if avg_lead_time > 0:
-            po_list.append(f"• Avg lead time: {avg_lead_time:.1f} days")
-        if len(at_risk) > 0:
-            po_list.append(f"• Reorder recommendations: {len(at_risk)} items")
+            unified_msg = f"✅ **Unified View**: All {len(metrics_df)} location-item combinations from local data (connect to Snowflake for real-time updates)"
+        st.success(unified_msg)
+        
+        if session:
+            caption_text = f"Data source: {data_source} ({data_source_details}). "
+            if "Dynamic Table" in data_source:
+                caption_text += "Auto-refreshes when source systems update."
+            else:
+                caption_text += "Refreshes on query. Consider using Dynamic Tables for auto-refresh."
         else:
-            po_list.append("• Reorder recommendations: 0 items (all well-stocked)")
-        if not metrics_df.empty and "lead_time_days" in metrics_df.columns:
-            items_with_lead_time = len(metrics_df[metrics_df["lead_time_days"].notna()])
-            po_list.append(f"• Items with lead time data: {items_with_lead_time}")
-        po_list.append("• Lead times factored into urgency calculations")
-        st.markdown("<br>".join(po_list), unsafe_allow_html=True)
-    
-    if session:
-        unified_msg = f"✅ **Unified View**: All {len(metrics_df)} location-item combinations consolidated in Snowflake for single-pane-of-glass visibility"
-    else:
-        unified_msg = f"✅ **Unified View**: All {len(metrics_df)} location-item combinations from local data (connect to Snowflake for real-time updates)"
-    st.success(unified_msg)
-    
-    if session:
-        caption_text = f"Data source: {data_source} ({data_source_details}). "
-        if "Dynamic Table" in data_source:
-            caption_text += "Auto-refreshes when source systems update."
-        else:
-            caption_text += "Refreshes on query. Consider using Dynamic Tables for auto-refresh."
-    else:
-        caption_text = f"Data source: {data_source} ({data_source_details}). Connect to Snowflake for real-time data and Dynamic Tables auto-refresh."
-    
-    st.caption(caption_text)
+            caption_text = f"Data source: {data_source} ({data_source_details}). Connect to Snowflake for real-time data and Dynamic Tables auto-refresh."
+        
+        st.caption(caption_text)
 
 
 if __name__ == "__main__":
