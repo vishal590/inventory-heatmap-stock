@@ -898,7 +898,7 @@ def main():
         display_df,
         use_container_width=True,
         hide_index=True,
-        column_config=        column_config_dict,
+        column_config=column_config_dict,
     )
     if not filtered.empty and "potential_waste" in filtered.columns:
         total_waste = filtered["potential_waste"].sum()

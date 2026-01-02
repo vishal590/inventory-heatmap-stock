@@ -186,8 +186,8 @@ This option uses the sample CSV data and doesn't require Snowflake connection.
 
 #### Step 1: Clone the Repository
 ```bash
-git clone https://github.com/YOUR_USERNAME/inventory-heatmap-stock-alerts.git
-cd inventory-heatmap-stock-alerts
+git clone https://github.com/vishal590/inventory-heatmap-stock.git
+cd inventory-heatmap-stock
 ```
 
 #### Step 2: Create Virtual Environment (Recommended)
@@ -223,8 +223,8 @@ This option connects to Snowflake and uses Dynamic Tables, Streams & Tasks.
 
 #### Step 1: Clone the Repository
 ```bash
-git clone https://github.com/YOUR_USERNAME/inventory-heatmap-stock-alerts.git
-cd inventory-heatmap-stock-alerts
+git clone https://github.com/vishal590/inventory-heatmap-stock.git
+cd inventory-heatmap-stock
 ```
 
 #### Step 2: Set Up Snowflake
@@ -816,6 +816,14 @@ ai_good/
 - App features in action
 - Problem statement alignment
 - Impact demonstration
+
+**Note:** Demo video link to be added.
+
+## 🔗 Live Application
+
+**Working Prototype:** [https://inventory-heatmap-stock.streamlit.app/](https://inventory-heatmap-stock.streamlit.app/)
+
+**GitHub Repository:** [https://github.com/vishal590/inventory-heatmap-stock](https://github.com/vishal590/inventory-heatmap-stock)
 
 ## 🤝 Contributing
 
