@@ -189,7 +189,7 @@ def load_action_logs(session, limit: int = 100, user_id: str = None):
             return pd.DataFrame()
 
 
-@st.cache_data
+@st.cache_data(ttl=60)
 def load_daily_data():
     session = get_snowflake_session()
     if session:
@@ -312,7 +312,7 @@ def compute_metrics_from_df(df: pd.DataFrame, session=None) -> pd.DataFrame:
     return df.loc[latest_idx].reset_index(drop=True)
 
 
-@st.cache_data
+@st.cache_data(ttl=60)
 def load_metrics():
     session = get_snowflake_session()
     if session:
@@ -479,6 +479,17 @@ def main():
             with st.expander("🔍 Connection Debug Info", expanded=False):
                 st.error(f"**Connection Error:** {st.session_state.connection_error}")
                 st.info("**Common fixes:**\n1. Account might need region: Try `'getyhji.us-east-1'` instead of `'getyhji'`\n2. Verify credentials in `.streamlit/secrets.toml`\n3. Ensure warehouse is running: `ALTER WAREHOUSE COMPUTE_WH RESUME;`\n4. Check database exists: `USE DATABASE AI_GOOD;`")
+
+    col_refresh1, col_refresh2, col_refresh3 = st.columns([1, 1, 10])
+    with col_refresh1:
+        if st.button("🔄 Refresh Data", help="Clear cache and reload data from Snowflake", type="secondary"):
+            st.cache_data.clear()
+            st.rerun()
+    with col_refresh2:
+        if session:
+            st.caption("🟢 Live data")
+        else:
+            st.caption("⚪ Static data")
 
     daily_df = load_daily_data()
     metrics_df = load_metrics()
