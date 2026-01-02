@@ -771,17 +771,44 @@ ai_good/
 
 ## 📸 Screenshots
 
-*Add screenshots of:*
-- Main dashboard with heatmap
-- Overall Health Dashboard
-- AI-Powered Demand Forecast (Snowpark ML)
-- At-risk items table with priority rankings
-- Purchase Order Recommendations
-- Trend charts
-- AI-Powered Summary (Cortex)
-- Action Logs (Unistore) interface
-- Export functionality
-- Data Integration Status
+### Main Dashboard with Heatmap
+![Main Dashboard Full Context](docs/screenshots/01-main-dashboard-full-context.PNG)
+*Full dashboard view showing filters, heatmap, and at-risk items table*
+
+![Heatmap Close-up](docs/screenshots/01-main-dashboard-heatmap-closeup.PNG)
+*Detailed view of the Stock Health Heatmap visualization*
+
+### Overall Health Dashboard
+![Overall Health Dashboard](docs/screenshots/02-overall-health-dashboard.PNG)
+*Key performance indicators: Total Items, At-Risk Items, Critical Items, and Health Score*
+
+### AI-Powered Demand Forecast (Snowpark ML)
+![AI-Powered Demand Forecast](docs/screenshots/ai-powered-demand-forecast.PNG)
+*Machine learning-based demand estimation comparing Simple Average vs ML Forecast with trend analysis*
+
+### At-Risk Items Table with Priority Rankings & Purchase Order Recommendations
+![At-Risk Items and Purchase Orders](docs/screenshots/04-at-risk-items-and-purchase-orders.PNG)
+*Prioritized at-risk items table with priority summary cards (Critical/High/Medium/Low) and recommended purchase orders for procurement teams*
+
+### Trend Charts
+![Trends & Historical Analysis](docs/screenshots/06-trends-historical-analysis.PNG)
+*Historical stock trends showing closing stock levels over time, with received (green) and issued (red) quantities, plus trend direction indicators*
+
+### AI-Powered Summary (Cortex)
+![AI-Powered Summary](docs/screenshots/07-ai-powered-summary.PNG)
+*AI-generated plain-language insights highlighting critical items and warning items with actionable recommendations, powered by Snowflake Cortex AI*
+
+### Action Logs (Unistore) Interface
+![Action Logs](docs/screenshots/08-action-logs-unistore.PNG)
+*Action tracking interface with three tabs (Recent Actions, Action Summary, Log New Action) showing user actions on inventory recommendations, powered by Snowflake Unistore hybrid tables*
+
+### Export Functionality
+![Export Functionality](docs/screenshots/09-export-functionality.PNG)
+*CSV export buttons for downloading priority lists and purchase order recommendations for procurement teams*
+
+### Data Integration Status
+![Data Integration Status](docs/screenshots/10-data-integration-status.PNG)
+*Unified view showing data integration from three systems (Inventory, Usage/Sales, Purchase Order) with real-time metrics and consolidated visibility*
 
 ## 🎥 Demo Video
 
